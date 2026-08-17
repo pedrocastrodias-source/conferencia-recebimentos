@@ -1,0 +1,19 @@
+Traceback (most recent call last):
+  File "C:\Users\PEDRO\OneDrive\LABORA~1\LABPOW~1\APLICA~1\AUTOMA~1\atualizar_fluxo_caixa.py", line 17, in <module>
+    from playwright.sync_api import sync_playwright
+  File "C:\Users\PEDRO\AppData\Roaming\Python\Python313\site-packages\playwright\sync_api\__init__.py", line 26, in <module>
+    import playwright.sync_api._generated
+  File "C:\Users\PEDRO\AppData\Roaming\Python\Python313\site-packages\playwright\sync_api\_generated.py", line 50, in <module>
+    from playwright._impl._assertions import (
+        APIResponseAssertions as APIResponseAssertionsImpl,
+    )
+  File "C:\Users\PEDRO\AppData\Roaming\Python\Python313\site-packages\playwright\_impl\_assertions.py", line 26, in <module>
+    from playwright._impl._connection import format_call_log
+  File "C:\Users\PEDRO\AppData\Roaming\Python\Python313\site-packages\playwright\_impl\_connection.py", line 42, in <module>
+    from playwright._impl._greenlets import EventGreenlet
+  File "C:\Users\PEDRO\AppData\Roaming\Python\Python313\site-packages\playwright\_impl\_greenlets.py", line 17, in <module>
+    import greenlet
+  File "C:\Users\PEDRO\AppData\Roaming\Python\Python313\site-packages\greenlet\__init__.py", line 26, in <module>
+    from ._greenlet import _C_API # pylint:disable=no-name-in-module
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+ImportError: DLL load failed while importing _greenlet: Não foi possível encontrar o módulo especificado.

@@ -1,0 +1,38 @@
+name: Atualizar Fluxo de Caixa
+
+on:
+  schedule:
+    # Rodar a cada 1 hora (no minuto 0 de cada hora)
+    - cron: '0 * * * *'
+  workflow_dispatch: # Permite rodar manualmente pelo painel do GitHub
+
+jobs:
+  atualizar:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout do código
+        uses: actions/checkout@v4
+
+      - name: Configurar o Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+
+      - name: Instalar dependências
+        run: |
+          python -m pip install --upgrade pip
+          pip install requests playwright xlrd openpyxl python-dotenv
+
+      - name: Instalar navegadores do Playwright
+        run: |
+          playwright install chromium --with-deps
+
+      - name: Executar Script de Atualização
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          EMAIL_USER: ${{ secrets.EMAIL_USER }}
+          EMAIL_PASS: ${{ secrets.EMAIL_PASS }}
+        run: |
+          python Automação/atualizar_fluxo_caixa.py --once

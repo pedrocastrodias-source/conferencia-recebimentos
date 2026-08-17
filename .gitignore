@@ -1,0 +1,27 @@
+# Environment variables
+.env
+.env.*
+.env.local
+
+# Local data spreadsheets (containing private transaction details)
+*.xls
+*.xlsx
+*.csv
+fluxo_caixa.xls
+relatorio_ton.csv
+fluxo_caixa_debug.xls
+
+# Logs and system settings
+automacao.log
+*.log
+last_processed_email.txt
+
+# Python cache
+__pycache__/
+*.pyc
+
+# React application dependencies and build folders
+conferencia-app/node_modules/
+conferencia-app/dist/
+conferencia-app/.env
+conferencia-app/.env.local
