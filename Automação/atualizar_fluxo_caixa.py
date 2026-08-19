@@ -212,7 +212,11 @@ def run_automation():
     with sync_playwright() as p:
         print("Inicializando navegador Chromium...")
         browser = p.chromium.launch(headless=True, args=["--no-sandbox", "--disable-setuid-sandbox", "--disable-gpu"])
-        context = browser.new_context(accept_downloads=True)
+        context = browser.new_context(
+            accept_downloads=True,
+            locale="pt-BR",
+            timezone_id="America/Sao_Paulo"
+        )
         page = context.new_page()
         
         # 1. Acessar site e fazer Login
