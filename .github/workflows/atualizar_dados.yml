@@ -36,3 +36,12 @@ jobs:
           EMAIL_PASS: ${{ secrets.EMAIL_PASS }}
         run: |
           python Automação/atualizar_fluxo_caixa.py --once
+
+      - name: Exibir logs da automação
+        if: always()
+        run: |
+          if [ -f "Automação/automacao.log" ]; then
+            cat Automação/automacao.log
+          else
+            echo "Arquivo automacao.log não foi criado."
+          fi
