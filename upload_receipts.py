@@ -42,6 +42,33 @@ def parse_money(val_str):
     except Exception:
         return 0.0
 
+def fetch_all_ids(table_name, headers):
+    all_ids = set()
+    limit = 1000
+    offset = 0
+    url_base = f"{SUPABASE_URL}/rest/v1/{table_name}?select=id"
+    while True:
+        url_paged = f"{url_base}&limit={limit}&offset={offset}"
+        try:
+            res = requests.get(url_paged, headers=headers)
+            if res.status_code != 200:
+                print(f"Erro ao buscar IDs de {table_name}: {res.status_code} - {res.text}")
+                break
+            items = res.json()
+            if not items:
+                break
+            for item in items:
+                raw_id = item.get("id")
+                if raw_id is not None:
+                    all_ids.add(str(raw_id).strip())
+            if len(items) < limit:
+                break
+            offset += limit
+        except Exception as e:
+            print(f"Erro ao paginar IDs de {table_name}: {e}")
+            break
+    return all_ids
+
 def import_pclab(headers):
     import re
     print("==================================================")
@@ -153,22 +180,12 @@ def import_pclab(headers):
         print("Nenhum registro válido encontrado no Excel pós-filtragem.")
         return
 
-    url_get = f"{SUPABASE_URL}/rest/v1/Conferencia_PCLAB?select=id"
     print("Consultando registros já existentes no Supabase (PCLAB)...")
-    try:
-        response = requests.get(url_get, headers=headers)
-        if response.status_code != 200:
-            print(f"Erro ao buscar registros no Supabase: {response.status_code} - {response.text}")
-            return
-        
-        existing_ids = {item["id"] for item in response.json()}
-        print(f"Registros encontrados no banco de dados (PCLAB): {len(existing_ids)}")
-    except Exception as e:
-        print(f"Erro na conexão com o Supabase: {e}")
-        return
+    existing_ids = fetch_all_ids("Conferencia_PCLAB", headers)
+    print(f"Registros encontrados no banco de dados (PCLAB): {len(existing_ids)}")
 
     # Filtragem de duplicados
-    new_records = [rec for rec in records if rec["id"] not in existing_ids]
+    new_records = [rec for rec in records if str(rec["id"]).strip() not in existing_ids]
     print(f"Novos registros PCLAB a serem inseridos: {len(new_records)}")
     print(f"Registros PCLAB duplicados ignorados: {len(records) - len(new_records)}")
 
@@ -182,7 +199,7 @@ def import_pclab(headers):
     
     headers_post = headers.copy()
     headers_post["Content-Type"] = "application/json"
-    headers_post["Prefer"] = "return=minimal"
+    headers_post["Prefer"] = "resolution=merge-duplicates,return=minimal"
     
     uploaded_count = 0
     for i in range(0, len(new_records), chunk_size):
@@ -304,22 +321,12 @@ def import_maquininha(headers):
         print("Nenhum registro válido encontrado no relatório da Maquininha.")
         return
 
-    url_get = f"{SUPABASE_URL}/rest/v1/Conferencia_Maquininha?select=id"
     print("Consultando registros já existentes no Supabase (Maquininha)...")
-    try:
-        response = requests.get(url_get, headers=headers)
-        if response.status_code != 200:
-            print(f"Erro ao buscar registros no Supabase: {response.status_code} - {response.text}")
-            return
-        
-        existing_ids = {str(item["id"]).strip() for item in response.json()}
-        print(f"Registros encontrados no banco de dados (Maquininha): {len(existing_ids)}")
-    except Exception as e:
-        print(f"Erro na conexão com o Supabase: {e}")
-        return
+    existing_ids = fetch_all_ids("Conferencia_Maquininha", headers)
+    print(f"Registros encontrados no banco de dados (Maquininha): {len(existing_ids)}")
 
     # Filtragem de duplicados
-    new_records = [rec for rec in records if rec["id"] not in existing_ids]
+    new_records = [rec for rec in records if str(rec["id"]).strip() not in existing_ids]
     print(f"Novos registros Maquininha a serem inseridos: {len(new_records)}")
     print(f"Registros Maquininha duplicados ignorados: {len(records) - len(new_records)}")
 
@@ -333,7 +340,7 @@ def import_maquininha(headers):
     
     headers_post = headers.copy()
     headers_post["Content-Type"] = "application/json"
-    headers_post["Prefer"] = "return=minimal"
+    headers_post["Prefer"] = "resolution=merge-duplicates,return=minimal"
     
     uploaded_count = 0
     for i in range(0, len(new_records), chunk_size):

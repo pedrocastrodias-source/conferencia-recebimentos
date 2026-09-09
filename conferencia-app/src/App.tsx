@@ -6,7 +6,7 @@ import {
   RefreshCw, ListChecks, ArrowRightLeft, FileSpreadsheet, 
   Trash2, Search, ArrowRight, ShieldAlert, BadgeCheck, CheckCircle2,
   DollarSign, CreditCard, Banknote, Landmark, Sparkles, Calendar,
-  Lock, LogOut
+  Lock, LogOut, EyeOff, Eye
 } from 'lucide-react';
 import * as XLSX from 'xlsx';
 import { ResponsiveContainer, Tooltip, Legend, LineChart, Line, XAxis, YAxis, CartesianGrid } from 'recharts';
@@ -237,6 +237,11 @@ const isPersonalPedro = (desc: string, comp: string) => {
 const isDisregardedReceipt = (r: ReceitaBBRow) => {
   const desc = (r.descricao_normalizada || '').toLowerCase();
   const comp = (r.descricao_complementar || '').toLowerCase();
+
+  // Se já estiver explicitamente classificado como desconsiderar no banco, respeitar
+  if (r.classificacao?.toLowerCase() === 'desconsiderar') {
+    return true;
+  }
 
   // 1. Check if it matches Pedro's personal CPF/name - if so, it is NOT disregarded
   if (isPersonalPedro(r.descricao_normalizada, r.descricao_complementar)) {
@@ -471,6 +476,10 @@ export default function App() {
   // Faturamento tab specific state
   const [faturamentoSubTab, setFaturamentoSubTab] = useState<'particular' | 'unimed' | 'cargill' | 'chromatox' | 'desconsiderados'>('particular');
   const [faturamentoBusca, setFaturamentoBusca] = useState('');
+  const [showFaturamentoAjusteForm, setShowFaturamentoAjusteForm] = useState(false);
+  const [fatAjustFormDate, setFatAjustFormDate] = useState('');
+  const [fatAjustFormDesc, setFatAjustFormDesc] = useState('');
+  const [fatAjustFormVal, setFatAjustFormVal] = useState('');
 
   useEffect(() => {
     fetchData();
@@ -478,21 +487,48 @@ export default function App() {
 
   // When active tab is adjusted or startDate is set, update date in form to match
   useEffect(() => {
-    if (startDate) setAjustFormDate(startDate);
+    if (startDate) {
+      setAjustFormDate(startDate);
+      setFatAjustFormDate(startDate);
+    }
   }, [startDate]);
+
+  async function fetchAllFromTable(tableName: string) {
+    let allData: any[] = [];
+    let from = 0;
+    const step = 1000;
+    while (true) {
+      const { data, error } = await supabase
+        .from(tableName)
+        .select('*')
+        .range(from, from + step - 1);
+      if (error) {
+        console.error(`Erro ao carregar tabela ${tableName}:`, error);
+        break;
+      }
+      if (!data || data.length === 0) break;
+      allData = allData.concat(data);
+      if (data.length < step) break;
+      from += step;
+    }
+    return allData;
+  }
 
   async function fetchData() {
     setConferenciaLoading(true);
     try {
-      const { data: pclab } = await supabase.from('Conferencia_PCLAB').select('*');
-      const { data: maquininha } = await supabase.from('Conferencia_Maquininha').select('*');
-      const { data: receitasBB } = await supabase.from('Conferencia_ReceitasBB').select('*');
-      const { data: regras } = await supabase.from('Conferencia_ReceitasClassificacao').select('*').order('criado_em', { ascending: false });
-      const { data: ajustes } = await supabase.from('Conferencia_Ajustes').select('*').order('data', { ascending: false });
+      const [pclab, maquininha, receitasBB, regrasRes, ajustesRes] = await Promise.all([
+        fetchAllFromTable('Conferencia_PCLAB'),
+        fetchAllFromTable('Conferencia_Maquininha'),
+        fetchAllFromTable('Conferencia_ReceitasBB'),
+        supabase.from('Conferencia_ReceitasClassificacao').select('*').order('criado_em', { ascending: false }),
+        supabase.from('Conferencia_Ajustes').select('*').order('data', { ascending: false })
+      ]);
 
-      if (pclab) {
-        setPclabRows(pclab);
-      }
+      const regras = regrasRes.data || [];
+      const ajustes = ajustesRes.data || [];
+
+      if (pclab) setPclabRows(pclab);
       if (maquininha) setMaquininhaRows(maquininha);
       if (ajustes) setAjustesRows(ajustes);
 
@@ -529,10 +565,12 @@ export default function App() {
             return { ...r, classificacao: 'desconsiderar' };
           }
 
-          // Se for o Pedro pessoal, garanta que NÃO seja desconsiderado (mudar para Transferência Bancária)
+          // Se for o Pedro pessoal, garanta que NÃO seja desconsiderado (mudar para Transferência Bancária),
+          // A MENOS que exista uma regra explícita de classificação no banco!
           const isPersonal = isPersonalPedro(r.descricao_normalizada || '', r.descricao_complementar || '');
+          const temRegraExplicita = regras?.some(reg => reg.descricao_normalizada === r.descricao_normalizada);
 
-          if (isPersonal && (r.classificacao === 'desconsiderar' || !r.classificacao)) {
+          if (isPersonal && !temRegraExplicita && (r.classificacao === 'desconsiderar' || !r.classificacao)) {
             return { ...r, classificacao: 'Transferencia Bancária' };
           }
 
@@ -1622,6 +1660,75 @@ export default function App() {
     }
   };
 
+  const handleCreateFaturamentoAjuste = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!fatAjustFormDate || !fatAjustFormDesc || !fatAjustFormVal) {
+      alert("Por favor, preencha todos os campos do ajuste.");
+      return;
+    }
+
+    setSavingAjust(true);
+    try {
+      const { error } = await supabase
+        .from('Conferencia_Ajustes')
+        .insert({
+          data: fatAjustFormDate,
+          descricao: fatAjustFormDesc,
+          valor: Number(fatAjustFormVal),
+          categoria: faturamentoSubTab, // 'particular', 'unimed', 'cargill', 'chromatox', 'desconsiderados'
+          lado: 'destino'
+        });
+
+      if (error) throw error;
+      
+      setFatAjustFormDesc('');
+      setFatAjustFormVal('');
+      setShowFaturamentoAjusteForm(false);
+      await fetchData();
+      alert("Ajuste de faturamento registrado com sucesso!");
+    } catch (err) {
+      console.error("Erro ao salvar ajuste de faturamento:", err);
+      alert("Erro ao registrar ajuste!");
+    } finally {
+      setSavingAjust(false);
+    }
+  };
+
+  const handleReclassifyToIgnored = async (id: number) => {
+    try {
+      const { error } = await supabase
+        .from('extrato_bb_completo')
+        .update({ classificacao_manual: 'desconsiderar' })
+        .eq('id', id);
+
+      if (error) throw error;
+      await fetchData();
+    } catch (e) {
+      console.error("Erro ao reclassificar lançamento:", e);
+      alert("Erro ao reclassificar lançamento!");
+    }
+  };
+
+  const handleRestoreReceipt = async (id: number, descricao: string) => {
+    try {
+      const descLower = (descricao || '').toLowerCase();
+      const isDefaultIgnored = descLower === 's a l d o' || descLower.includes('transferência recebida') || descLower.includes('transferencia recebida');
+
+      const { error } = await supabase
+        .from('extrato_bb_completo')
+        .update({ 
+          classificacao_manual: isDefaultIgnored ? 'Transferencia Bancária' : null 
+        })
+        .eq('id', id);
+
+      if (error) throw error;
+      await fetchData();
+    } catch (e) {
+      console.error("Erro ao restaurar lançamento:", e);
+      alert("Erro ao restaurar lançamento!");
+    }
+  };
+
   const handleDeleteAjuste = async (id: number) => {
     if (!confirm("Deseja realmente excluir este ajuste manual?")) return;
     try {
@@ -1851,6 +1958,50 @@ export default function App() {
       }
     });
 
+    // Process faturamento adjustments
+    (ajustesRows || []).forEach(a => {
+      if (a.lado !== 'destino') return; // Faturamento is bank-side, so only destino adjustments apply
+      const monthStr = a.data?.substring(0, 7);
+      if (!monthStr || !faturamentoMonths.includes(monthStr)) return;
+
+      const category = a.categoria?.toLowerCase();
+      const val = Number(a.valor) || 0;
+      
+      // Map to a virtual ReceitaBBRow so it can be rendered in the lists!
+      const virtualReceipt: ReceitaBBRow = {
+        id: -Number(a.id), // negative ID to avoid collision
+        data_lancamento: `${a.data}T00:00:00`,
+        valor: val,
+        descricao_historico: `[Ajuste Manual] ${a.descricao}`,
+        descricao_normalizada: `[Ajuste Manual] ${a.descricao}`,
+        descricao_complementar: 'Ajuste Manual de Faturamento',
+        numero_documento: 'AJUSTE',
+        classificacao: null
+      };
+
+      if (category === 'cargill') {
+        grid[monthStr].cargill += val;
+        totalCargill += val;
+        cargillRows.push(virtualReceipt);
+      } else if (category === 'unimed') {
+        grid[monthStr].unimed += val;
+        totalUnimed += val;
+        unimedRows.push(virtualReceipt);
+      } else if (category === 'chromatox') {
+        grid[monthStr].chromatox += val;
+        totalChromatox += val;
+        chromatoxRows.push(virtualReceipt);
+      } else if (category === 'particular') {
+        grid[monthStr].particular += val;
+        totalParticular += val;
+        particularRows.push(virtualReceipt);
+      } else if (category === 'desconsiderados' || category === 'desconsiderado') {
+        grid[monthStr].disregarded += val;
+        totalDisregarded += val;
+        disregardedRows.push(virtualReceipt);
+      }
+    });
+
     return {
       grid,
       totals: {
@@ -1868,7 +2019,7 @@ export default function App() {
         disregarded: disregardedRows
       }
     };
-  }, [receitasBbRows, faturamentoMonths]);
+  }, [receitasBbRows, faturamentoMonths, ajustesRows]);
 
   const formatMonthYear = (monthStr: string) => {
     const [year, month] = monthStr.split('-');
@@ -2432,10 +2583,106 @@ export default function App() {
                   <h3 style={{ color: 'var(--text-dark)', fontWeight: 600, fontSize: '1.1rem' }}>
                     Auditoria de Lançamentos
                   </h3>
-                  <button onClick={handleExportFaturamento} className="btn-filter" style={{ display: 'flex', alignItems: 'center', gap: '0.25rem', padding: '0.35rem 0.6rem', fontSize: '0.75rem' }}>
-                    <FileSpreadsheet size={14} /> Exportar Excel
-                  </button>
+                  <div style={{ display: 'flex', gap: '0.5rem' }}>
+                    <button 
+                      onClick={() => setShowFaturamentoAjusteForm(!showFaturamentoAjusteForm)} 
+                      className="btn-filter" 
+                      style={{ 
+                        display: 'flex', 
+                        alignItems: 'center', 
+                        gap: '0.25rem', 
+                        padding: '0.35rem 0.6rem', 
+                        fontSize: '0.75rem',
+                        background: showFaturamentoAjusteForm ? 'var(--primary-dark, rgba(59, 130, 246, 0.1))' : 'transparent',
+                        borderColor: showFaturamentoAjusteForm ? 'var(--primary)' : 'var(--border-color)',
+                        color: showFaturamentoAjusteForm ? 'var(--primary)' : 'var(--text-muted)'
+                      }}
+                    >
+                      <ArrowRightLeft size={14} style={{ transform: 'rotate(90deg)' }} /> Lan. Ajuste
+                    </button>
+                    <button onClick={handleExportFaturamento} className="btn-filter" style={{ display: 'flex', alignItems: 'center', gap: '0.25rem', padding: '0.35rem 0.6rem', fontSize: '0.75rem' }}>
+                      <FileSpreadsheet size={14} /> Exportar Excel
+                    </button>
+                  </div>
                 </div>
+
+                {/* Form de Ajuste de Faturamento */}
+                {showFaturamentoAjusteForm && (
+                  <form onSubmit={handleCreateFaturamentoAjuste} style={{
+                    background: 'rgba(255,255,255,0.03)',
+                    border: '1px solid var(--border-color)',
+                    borderRadius: '8px',
+                    padding: '1rem',
+                    marginBottom: '1rem',
+                    display: 'flex',
+                    flexDirection: 'column',
+                    gap: '0.75rem'
+                  }}>
+                    <h4 style={{ fontSize: '0.8rem', fontWeight: 600, color: 'var(--primary)', margin: 0 }}>
+                      Lançar Ajuste para Categoria: {faturamentoSubTab === 'desconsiderados' ? 'IGNORADOS' : faturamentoSubTab.toUpperCase()}
+                    </h4>
+                    
+                    <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>
+                      <div style={{ flex: 1, minWidth: '120px' }}>
+                        <label style={{ display: 'block', fontSize: '0.7rem', color: 'var(--text-muted)', marginBottom: '0.2rem' }}>Data</label>
+                        <input 
+                          type="date" 
+                          className="input-text" 
+                          style={{ fontSize: '0.75rem', padding: '0.35rem 0.5rem' }}
+                          value={fatAjustFormDate} 
+                          onChange={e => setFatAjustFormDate(e.target.value)} 
+                          required
+                        />
+                      </div>
+                      
+                      <div style={{ flex: 1, minWidth: '100px' }}>
+                        <label style={{ display: 'block', fontSize: '0.7rem', color: 'var(--text-muted)', marginBottom: '0.2rem' }}>Valor (R$)</label>
+                        <input 
+                          type="number" 
+                          step="0.01"
+                          className="input-text" 
+                          placeholder="0.00"
+                          style={{ fontSize: '0.75rem', padding: '0.35rem 0.5rem' }}
+                          value={fatAjustFormVal} 
+                          onChange={e => setFatAjustFormVal(e.target.value)} 
+                          required
+                        />
+                      </div>
+                    </div>
+
+                    <div>
+                      <label style={{ display: 'block', fontSize: '0.7rem', color: 'var(--text-muted)', marginBottom: '0.2rem' }}>Descrição</label>
+                      <input 
+                        type="text" 
+                        className="input-text" 
+                        placeholder="Ex: Ajuste convênio unimed" 
+                        style={{ fontSize: '0.75rem', padding: '0.35rem 0.5rem' }}
+                        value={fatAjustFormDesc} 
+                        onChange={e => setFatAjustFormDesc(e.target.value)} 
+                        required
+                      />
+                    </div>
+
+                    <div style={{ display: 'flex', gap: '0.5rem', justifyContent: 'flex-end', marginTop: '0.25rem' }}>
+                      <button 
+                        type="button" 
+                        className="btn-filter" 
+                        style={{ fontSize: '0.7rem', padding: '0.3rem 0.6rem', border: '1px solid var(--border-color)', borderRadius: '4px' }}
+                        onClick={() => setShowFaturamentoAjusteForm(false)}
+                      >
+                        Cancelar
+                      </button>
+                      <button 
+                        type="submit" 
+                        className="btn-action" 
+                        style={{ fontSize: '0.7rem', padding: '0.3rem 0.6rem', borderRadius: '4px', background: 'var(--primary)', color: '#fff' }}
+                        disabled={savingAjust}
+                      >
+                        {savingAjust ? 'Salvando...' : 'Salvar Ajuste'}
+                      </button>
+                    </div>
+                  </form>
+                )}
 
                 {/* Sub-abas de faturamento */}
                 <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.25rem', marginBottom: '1rem', background: 'rgba(255,255,255,0.02)', padding: '0.25rem', borderRadius: '8px', border: '1px solid var(--border-color)' }}>
@@ -2491,23 +2738,79 @@ export default function App() {
                     </thead>
                     <tbody>
                       {filteredFaturamentoReceipts.map(r => (
-                        <tr key={r.id}>
+                        <tr key={r.id} style={{ background: r.id < 0 ? 'rgba(59, 130, 246, 0.04)' : 'transparent' }}>
                           <td>{formatDate(r.data_lancamento)}</td>
                           <td style={{ whiteSpace: 'normal' }}>
-                            <div style={{ fontWeight: 600, color: 'var(--text-dark)' }}>
-                              {r.descricao_normalizada || 'S/D'}
-                            </div>
-                            <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)', marginTop: '0.15rem' }}>
-                              {r.descricao_complementar}
-                            </div>
-                            {r.numero_documento && (
-                              <div style={{ fontSize: '0.65rem', color: 'var(--primary)', marginTop: '0.1rem' }}>
-                                Doc: {r.numero_documento}
+                            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: '0.5rem' }}>
+                              <div>
+                                <div style={{ fontWeight: 600, color: r.id < 0 ? 'var(--primary)' : 'var(--text-dark)' }}>
+                                  {r.descricao_normalizada || 'S/D'}
+                                </div>
+                                <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)', marginTop: '0.15rem' }}>
+                                  {r.descricao_complementar}
+                                </div>
+                                {r.numero_documento && (
+                                  <div style={{ fontSize: '0.65rem', color: 'var(--primary)', marginTop: '0.1rem' }}>
+                                    Doc: {r.numero_documento}
+                                  </div>
+                                )}
                               </div>
-                            )}
+                              {r.id > 0 && (
+                                faturamentoSubTab !== 'desconsiderados' ? (
+                                  <button
+                                    onClick={() => handleReclassifyToIgnored(r.id)}
+                                    style={{
+                                      border: 'none',
+                                      background: 'transparent',
+                                      color: 'var(--text-muted)',
+                                      cursor: 'pointer',
+                                      padding: '0.2rem',
+                                      display: 'flex',
+                                      alignItems: 'center',
+                                      opacity: 0.6
+                                    }}
+                                    onMouseEnter={(e) => (e.currentTarget.style.color = 'var(--danger)')}
+                                    onMouseLeave={(e) => (e.currentTarget.style.color = 'var(--text-muted)')}
+                                    title="Ignorar este lançamento"
+                                  >
+                                    <EyeOff size={14} />
+                                  </button>
+                                ) : (
+                                  <button
+                                    onClick={() => handleRestoreReceipt(r.id, r.descricao_normalizada)}
+                                    style={{
+                                      border: 'none',
+                                      background: 'transparent',
+                                      color: 'var(--text-muted)',
+                                      cursor: 'pointer',
+                                      padding: '0.2rem',
+                                      display: 'flex',
+                                      alignItems: 'center',
+                                      opacity: 0.6
+                                    }}
+                                    onMouseEnter={(e) => (e.currentTarget.style.color = 'var(--success)')}
+                                    onMouseLeave={(e) => (e.currentTarget.style.color = 'var(--text-muted)')}
+                                    title="Restaurar este lançamento"
+                                  >
+                                    <Eye size={14} />
+                                  </button>
+                                )
+                              )}
+                            </div>
                           </td>
                           <td className="amount val-positive" style={{ textAlign: 'right', fontWeight: 600 }}>
-                            {formatCurrency(r.valor)}
+                            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: '0.5rem' }}>
+                              {formatCurrency(r.valor)}
+                              {r.id < 0 && (
+                                <button 
+                                  onClick={() => handleDeleteAjuste(-r.id)} 
+                                  style={{ border: 'none', background: 'transparent', color: 'var(--danger)', cursor: 'pointer', padding: '0.1rem', display: 'flex', alignItems: 'center' }}
+                                  title="Excluir ajuste"
+                                >
+                                  <Trash2 size={13} />
+                                </button>
+                              )}
+                            </div>
                           </td>
                         </tr>
                       ))}
