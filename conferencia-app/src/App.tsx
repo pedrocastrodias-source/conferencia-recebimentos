@@ -481,6 +481,87 @@ export default function App() {
   const [fatAjustFormDesc, setFatAjustFormDesc] = useState('');
   const [fatAjustFormVal, setFatAjustFormVal] = useState('');
 
+  const [isSyncingRobot, setIsSyncingRobot] = useState(false);
+  const [syncRobotStatus, setSyncRobotStatus] = useState<string | null>(null);
+
+  async function handleTriggerGithubSync() {
+    const token = import.meta.env.VITE_GITHUB_TOKEN;
+    const repo = import.meta.env.VITE_GITHUB_REPO || 'pedrocastrodias-source/conferencia-recebimentos';
+    
+    if (!token) {
+      alert('Token do GitHub não configurado no .env.');
+      return;
+    }
+
+    setIsSyncingRobot(true);
+    setSyncRobotStatus('Iniciando robô no GitHub...');
+
+    try {
+      // 1. Disparar workflow_dispatch
+      const dispatchRes = await fetch(`https://api.github.com/repos/${repo}/actions/workflows/atualizar_dados.yml/dispatches`, {
+        method: 'POST',
+        headers: {
+          'Authorization': `token ${token}`,
+          'Accept': 'application/vnd.github.v3+json',
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({ ref: 'main' })
+      });
+
+      if (!dispatchRes.ok && dispatchRes.status !== 204) {
+        const errText = await dispatchRes.text();
+        throw new Error(`Falha ao disparar GitHub Actions (${dispatchRes.status}): ${errText}`);
+      }
+
+      setSyncRobotStatus('Robô em execução: extraindo PCLAB e Ton...');
+      
+      // 2. Aguardar 8s antes da primeira verificação
+      await new Promise(res => setTimeout(res, 8000));
+
+      // 3. Monitorar a execução do workflow
+      const maxAttempts = 24; // ~2 minutos no máximo
+
+      for (let i = 0; i < maxAttempts; i++) {
+        const runsRes = await fetch(`https://api.github.com/repos/${repo}/actions/runs?per_page=1`, {
+          headers: {
+            'Authorization': `token ${token}`,
+            'Accept': 'application/vnd.github.v3+json'
+          }
+        });
+
+        if (runsRes.ok) {
+          const runsData = await runsRes.json();
+          const latestRun = runsData.workflow_runs?.[0];
+
+          if (latestRun) {
+            if (latestRun.status === 'completed') {
+              if (latestRun.conclusion === 'success') {
+                setSyncRobotStatus('Finalizando e carregando dados...');
+                break;
+              } else {
+                throw new Error(`O robô finalizou com status: ${latestRun.conclusion}`);
+              }
+            } else {
+              setSyncRobotStatus(`Extraindo dados na nuvem (${i * 5 + 10}s)...`);
+            }
+          }
+        }
+        await new Promise(res => setTimeout(res, 5000));
+      }
+
+      // 4. Recarregar dados do Supabase
+      await fetchData();
+      setSyncRobotStatus('Sincronização concluída com sucesso!');
+      setTimeout(() => setSyncRobotStatus(null), 5000);
+    } catch (err: any) {
+      console.error('Erro na sincronização via GitHub:', err);
+      setSyncRobotStatus(`Erro: ${err.message || 'Falha ao sincronizar'}`);
+      setTimeout(() => setSyncRobotStatus(null), 6000);
+    } finally {
+      setIsSyncingRobot(false);
+    }
+  }
+
   useEffect(() => {
     fetchData();
   }, []);
@@ -2225,16 +2306,62 @@ export default function App() {
           <h1>Conferência de Recebimentos</h1>
           <p>Confronto de dados: PCLAB vs Maquininha Ton & Extrato Banco do Brasil</p>
         </div>
-        <div style={{ display: 'flex', gap: '1rem', alignItems: 'center', flexWrap: 'wrap' }}>
+        <div style={{ display: 'flex', gap: '0.75rem', alignItems: 'center', flexWrap: 'wrap' }}>
+          {syncRobotStatus && (
+            <span style={{ 
+              fontSize: '0.8rem', 
+              padding: '0.4rem 0.8rem', 
+              borderRadius: '8px', 
+              background: syncRobotStatus.includes('Erro') ? 'rgba(239, 68, 68, 0.15)' : 'rgba(59, 130, 246, 0.15)',
+              color: syncRobotStatus.includes('Erro') ? '#ef4444' : '#60a5fa',
+              border: `1px solid ${syncRobotStatus.includes('Erro') ? 'rgba(239, 68, 68, 0.3)' : 'rgba(59, 130, 246, 0.3)'}`,
+              display: 'flex',
+              alignItems: 'center',
+              gap: '0.4rem',
+              fontWeight: 500
+            }}>
+              {isSyncingRobot && <RefreshCw size={13} className="spin-animation" />}
+              {syncRobotStatus}
+            </span>
+          )}
+
           {lastUpdateTime && (
             <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', fontSize: '0.75rem', color: 'var(--text-muted)' }}>
               <span>Última Atualização no Banco:</span>
               <strong style={{ color: 'var(--text-dark)' }}>{formatLastUpdate(lastUpdateTime)}</strong>
             </div>
           )}
-          <button onClick={fetchData} className="btn-filter" style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', border: '1px solid var(--border-color)' }}>
-            <RefreshCw size={16} className={conferenciaLoading ? 'spin-animation' : ''} /> Atualizar Dados
+
+          <button 
+            onClick={handleTriggerGithubSync} 
+            disabled={isSyncingRobot} 
+            className="btn-primary" 
+            style={{ 
+              display: 'flex', 
+              alignItems: 'center', 
+              gap: '0.5rem', 
+              padding: '0.55rem 1rem',
+              background: isSyncingRobot ? 'rgba(59, 130, 246, 0.2)' : 'linear-gradient(135deg, #2563eb, #1d4ed8)',
+              border: '1px solid #3b82f6',
+              cursor: isSyncingRobot ? 'not-allowed' : 'pointer',
+              fontWeight: 600
+            }}
+            title="Executa o robô no GitHub Actions para baixar dados novos do PCLAB e Ton na nuvem"
+          >
+            <Sparkles size={16} className={isSyncingRobot ? 'spin-animation' : ''} /> 
+            {isSyncingRobot ? 'Sincronizando Robô...' : 'Sincronizar Robô (PCLAB / Ton)'}
           </button>
+
+          <button 
+            onClick={fetchData} 
+            disabled={conferenciaLoading || isSyncingRobot} 
+            className="btn-filter" 
+            style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', border: '1px solid var(--border-color)', padding: '0.55rem 0.9rem' }}
+            title="Recarrega as informações já salvas no banco de dados"
+          >
+            <RefreshCw size={15} className={conferenciaLoading ? 'spin-animation' : ''} /> Recarregar Tela
+          </button>
+
           <button onClick={handleLogout} className="btn-logout">
             <LogOut size={16} /> Sair
           </button>
