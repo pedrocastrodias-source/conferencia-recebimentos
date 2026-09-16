@@ -1,12 +1,13 @@
 import { useEffect, useState, useMemo, useCallback } from 'react';
 import { supabase } from './supabase';
-import { format, parseISO } from 'date-fns';
+import { format, parseISO, addDays } from 'date-fns';
 import { ptBR } from 'date-fns/locale';
 import { 
   RefreshCw, ListChecks, ArrowRightLeft, FileSpreadsheet, 
   Trash2, Search, ArrowRight, ShieldAlert, BadgeCheck, CheckCircle2,
   DollarSign, CreditCard, Banknote, Landmark, Sparkles, Calendar,
-  Lock, LogOut, EyeOff, Eye
+  Lock, LogOut, EyeOff, Eye, CalendarDays, ChevronLeft, ChevronRight,
+  TrendingUp, Users, Receipt
 } from 'lucide-react';
 import * as XLSX from 'xlsx';
 import { ResponsiveContainer, Tooltip, Legend, LineChart, Line, XAxis, YAxis, CartesianGrid } from 'recharts';
@@ -314,8 +315,13 @@ export default function App() {
   const [loginLoading, setLoginLoading] = useState(false);
 
   const [loading, setLoading] = useState(true);
-  const [activeTab, setActiveTab] = useState<'dashboard' | 'conferencia' | 'classificacao' | 'regras' | 'ajustes' | 'faturamento'>('dashboard');
+  const [activeTab, setActiveTab] = useState<'resumo_diario' | 'dashboard' | 'conferencia' | 'classificacao' | 'regras' | 'ajustes' | 'faturamento'>('resumo_diario');
   
+  // Daily Summary State (Resumo Diário)
+  const [selectedDailyDate, setSelectedDailyDate] = useState<string>(() => format(new Date(), 'yyyy-MM-dd'));
+  const [dailyPclabFilter, setDailyPclabFilter] = useState<'todos' | 'dinheiro' | 'cartao_credito' | 'cartao_debito' | 'pix' | 'outro'>('todos');
+  const [dailySearch, setDailySearch] = useState<string>('');
+
   // Data State
   const [pclabRows, setPclabRows] = useState<PCLABRow[]>([]);
   const [maquininhaRows, setMaquininhaRows] = useState<MaquininhaRow[]>([]);
@@ -700,6 +706,151 @@ export default function App() {
 
     return true;
   }, [useCompletePeriod, useCustomPeriod, startDate, endDate, selectedMonths, selectedYears]);
+
+  // Resumo Diário Data Computation
+  const dailySummaryData = useMemo(() => {
+    if (!selectedDailyDate) {
+      return {
+        dateStr: '',
+        pclabList: [],
+        filteredPclabList: [],
+        totalPclab: 0,
+        countPclab: 0,
+        ticketMedio: 0,
+        dinheiroPclab: 0,
+        countDinheiro: 0,
+        cartaoCreditoPclab: 0,
+        countCartaoCredito: 0,
+        cartaoDebitoPclab: 0,
+        countCartaoDebito: 0,
+        pixPclab: 0,
+        countPix: 0,
+        outrosPclab: 0,
+        countOutros: 0,
+        bbList: [],
+        totalBb: 0,
+        bbDinheiro: 0,
+        bbPix: 0,
+        maqList: [],
+        totalMaq: 0
+      };
+    }
+
+    const dateOnly = selectedDailyDate;
+
+    // 1. PCLAB for the selected day
+    const dayPclab = pclabRows.filter(r => {
+      if (!r.dt_lancamento) return false;
+      const d = r.dt_lancamento.includes('T') ? r.dt_lancamento.split('T')[0] : r.dt_lancamento.substring(0, 10);
+      return d === dateOnly;
+    });
+
+    let totalPclab = 0;
+    let dinheiroPclab = 0;
+    let countDinheiro = 0;
+    let cartaoCreditoPclab = 0;
+    let countCartaoCredito = 0;
+    let cartaoDebitoPclab = 0;
+    let countCartaoDebito = 0;
+    let pixPclab = 0;
+    let countPix = 0;
+    let outrosPclab = 0;
+    let countOutros = 0;
+
+    dayPclab.forEach(r => {
+      const val = Number(r.vr_lanc) || 0;
+      totalPclab += val;
+      const forma = (r.forma_pgto || '').toLowerCase();
+
+      if (forma.includes('dinheiro')) {
+        dinheiroPclab += val;
+        countDinheiro++;
+      } else if (forma.includes('crédito') || forma.includes('credito')) {
+        cartaoCreditoPclab += val;
+        countCartaoCredito++;
+      } else if (forma.includes('débito') || forma.includes('debito')) {
+        cartaoDebitoPclab += val;
+        countCartaoDebito++;
+      } else if (forma.includes('transf') || forma.includes('pix')) {
+        pixPclab += val;
+        countPix++;
+      } else {
+        outrosPclab += val;
+        countOutros++;
+      }
+    });
+
+    const countPclab = dayPclab.length;
+    const ticketMedio = countPclab > 0 ? totalPclab / countPclab : 0;
+
+    // Filtered PCLAB list
+    const filteredPclabList = dayPclab.filter(r => {
+      const forma = (r.forma_pgto || '').toLowerCase();
+      if (dailyPclabFilter === 'dinheiro' && !forma.includes('dinheiro')) return false;
+      if (dailyPclabFilter === 'cartao_credito' && !(forma.includes('crédito') || forma.includes('credito'))) return false;
+      if (dailyPclabFilter === 'cartao_debito' && !(forma.includes('débito') || forma.includes('debito'))) return false;
+      if (dailyPclabFilter === 'pix' && !(forma.includes('transf') || forma.includes('pix'))) return false;
+      if (dailyPclabFilter === 'outro' && (forma.includes('dinheiro') || forma.includes('crédito') || forma.includes('credito') || forma.includes('débito') || forma.includes('debito') || forma.includes('transf') || forma.includes('pix'))) return false;
+
+      if (dailySearch.trim()) {
+        const q = dailySearch.toLowerCase();
+        const desc = (r.descricao || '').toLowerCase();
+        const idStr = String(r.id);
+        const valStr = String(r.vr_lanc);
+        const fStr = (r.forma_pgto || '').toLowerCase();
+        if (!desc.includes(q) && !idStr.includes(q) && !valStr.includes(q) && !fStr.includes(q)) {
+          return false;
+        }
+      }
+      return true;
+    });
+
+    // Sort by time ascending
+    filteredPclabList.sort((a, b) => (a.dt_lancamento || '').localeCompare(b.dt_lancamento || ''));
+
+    // 2. Maquininha Ton for the day
+    const dayMaq = maquininhaRows.filter(m => {
+      if (!m.dt_transacao) return false;
+      const d = m.dt_transacao.includes('T') ? m.dt_transacao.split('T')[0] : m.dt_transacao.substring(0, 10);
+      return d === dateOnly;
+    });
+    const totalMaq = dayMaq.reduce((acc, curr) => acc + (Number(curr.vr_recebido) || 0), 0);
+
+    // 3. Banco do Brasil for the day
+    const dayBb = receitasBbRows.filter(b => {
+      if (!b.data_lancamento) return false;
+      const d = b.data_lancamento.includes('T') ? b.data_lancamento.split('T')[0] : b.data_lancamento.substring(0, 10);
+      return d === dateOnly && (b.classificacao || '').toLowerCase() !== 'desconsiderar';
+    });
+    const totalBb = dayBb.reduce((acc, curr) => acc + (Number(curr.valor) || 0), 0);
+    const bbDinheiro = dayBb.filter(b => (b.classificacao || '').toLowerCase() === 'dinheiro').reduce((acc, curr) => acc + (Number(curr.valor) || 0), 0);
+    const bbPix = dayBb.filter(b => (b.classificacao || '').toLowerCase() === 'transferencia bancária').reduce((acc, curr) => acc + (Number(curr.valor) || 0), 0);
+
+    return {
+      dateStr: dateOnly,
+      pclabList: dayPclab,
+      filteredPclabList,
+      totalPclab,
+      countPclab,
+      ticketMedio,
+      dinheiroPclab,
+      countDinheiro,
+      cartaoCreditoPclab,
+      countCartaoCredito,
+      cartaoDebitoPclab,
+      countCartaoDebito,
+      pixPclab,
+      countPix,
+      outrosPclab,
+      countOutros,
+      bbList: dayBb,
+      totalBb,
+      bbDinheiro,
+      bbPix,
+      maqList: dayMaq,
+      totalMaq
+    };
+  }, [selectedDailyDate, pclabRows, maquininhaRows, receitasBbRows, dailyPclabFilter, dailySearch]);
 
   const reconciliationData = useMemo(() => {
     const getOnlyDate = (dateStr: string) => {
@@ -2530,6 +2681,9 @@ export default function App() {
 
       {/* Nav Tabs */}
       <nav className="nav-tabs">
+        <button className={`tab-btn ${activeTab === 'resumo_diario' ? 'active' : ''}`} onClick={() => setActiveTab('resumo_diario')}>
+          <CalendarDays size={18} className="mr-2" /> Resumo Diário
+        </button>
         <button className={`tab-btn ${activeTab === 'dashboard' ? 'active' : ''}`} onClick={() => setActiveTab('dashboard')}>
           <Banknote size={18} className="mr-2" /> Dinheiro
         </button>
@@ -2552,6 +2706,521 @@ export default function App() {
       </nav>
 
       {/* Tabs Content */}
+      {/* 0. Resumo Diário Tab */}
+      {activeTab === 'resumo_diario' && (
+        <div className="fade-in" style={{ display: 'flex', flexDirection: 'column', gap: '1.5rem' }}>
+          
+          {/* Barra de Seleção de Data do Dia */}
+          <div className="glass-card" style={{ padding: '1.25rem', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '1rem', background: 'rgba(255, 255, 255, 0.03)' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', flexWrap: 'wrap' }}>
+              <button 
+                type="button" 
+                className="btn-filter" 
+                onClick={() => {
+                  try {
+                    const prev = addDays(parseISO(selectedDailyDate), -1);
+                    setSelectedDailyDate(format(prev, 'yyyy-MM-dd'));
+                  } catch (e) {
+                    console.error(e);
+                  }
+                }}
+                style={{ display: 'flex', alignItems: 'center', gap: '0.25rem', padding: '0.45rem 0.8rem' }}
+                title="Ir para o dia anterior"
+              >
+                <ChevronLeft size={16} /> Dia Anterior
+              </button>
+
+              <button 
+                type="button" 
+                className="btn-filter" 
+                onClick={() => setSelectedDailyDate(format(new Date(), 'yyyy-MM-dd'))}
+                style={{ 
+                  fontWeight: selectedDailyDate === format(new Date(), 'yyyy-MM-dd') ? 700 : 500,
+                  borderColor: selectedDailyDate === format(new Date(), 'yyyy-MM-dd') ? 'var(--primary)' : 'var(--border-color)',
+                  color: selectedDailyDate === format(new Date(), 'yyyy-MM-dd') ? 'var(--primary)' : 'var(--text-dark)',
+                  padding: '0.45rem 0.9rem'
+                }}
+              >
+                Hoje
+              </button>
+
+              <button 
+                type="button" 
+                className="btn-filter" 
+                onClick={() => {
+                  try {
+                    const next = addDays(parseISO(selectedDailyDate), 1);
+                    setSelectedDailyDate(format(next, 'yyyy-MM-dd'));
+                  } catch (e) {
+                    console.error(e);
+                  }
+                }}
+                style={{ display: 'flex', alignItems: 'center', gap: '0.25rem', padding: '0.45rem 0.8rem' }}
+                title="Ir para o próximo dia"
+              >
+                Próximo Dia <ChevronRight size={16} />
+              </button>
+
+              <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginLeft: '0.5rem' }}>
+                <Calendar size={16} style={{ color: 'var(--primary)' }} />
+                <input 
+                  type="date" 
+                  value={selectedDailyDate} 
+                  onChange={e => {
+                    if (e.target.value) setSelectedDailyDate(e.target.value);
+                  }}
+                  className="input-text"
+                  style={{ 
+                    padding: '0.45rem 0.8rem', 
+                    borderRadius: '8px', 
+                    background: 'var(--bg-card)', 
+                    border: '1px solid var(--border-color)', 
+                    color: 'var(--text-dark)',
+                    fontWeight: 600
+                  }}
+                />
+              </div>
+            </div>
+
+            <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+              <span className="badge badge-blue" style={{ fontSize: '0.9rem', padding: '0.45rem 1rem', textTransform: 'capitalize', fontWeight: 600 }}>
+                {(() => {
+                  try {
+                    return format(parseISO(selectedDailyDate), "EEEE, dd 'de' MMMM 'de' yyyy", { locale: ptBR });
+                  } catch (e) {
+                    return selectedDailyDate;
+                  }
+                })()}
+              </span>
+            </div>
+          </div>
+
+          {/* Cards de Indicadores do Dia */}
+          <div className="summary-grid" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))', gap: '1rem' }}>
+            
+            {/* Card 1: Total Faturado PCLAB */}
+            <div className="glass-card stat-card" style={{ borderLeft: '4px solid #3b82f6', position: 'relative', overflow: 'hidden' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
+                <div>
+                  <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.05em', fontWeight: 600 }}>
+                    Total Faturado no Dia
+                  </span>
+                  <div style={{ fontSize: '1.75rem', fontWeight: 700, color: 'var(--text-dark)', marginTop: '0.35rem' }}>
+                    {formatCurrency(dailySummaryData.totalPclab)}
+                  </div>
+                </div>
+                <div style={{ padding: '0.6rem', borderRadius: '10px', background: 'rgba(59, 130, 246, 0.15)', color: '#3b82f6' }}>
+                  <TrendingUp size={22} />
+                </div>
+              </div>
+              <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: '0.75rem', paddingTop: '0.75rem', borderTop: '1px solid var(--border-color)', fontSize: '0.8rem', color: 'var(--text-muted)' }}>
+                <span><Users size={13} style={{ display: 'inline', verticalAlign: 'middle', marginRight: '4px' }} /><strong>{dailySummaryData.countPclab}</strong> atendimentos</span>
+                <span>Ticket Médio: <strong style={{ color: 'var(--text-dark)' }}>{formatCurrency(dailySummaryData.ticketMedio)}</strong></span>
+              </div>
+            </div>
+
+            {/* Card 2: Dinheiro em Espécie */}
+            <div className="glass-card stat-card" style={{ borderLeft: '4px solid #10b981' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
+                <div>
+                  <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.05em', fontWeight: 600 }}>
+                    Dinheiro em Espécie
+                  </span>
+                  <div style={{ fontSize: '1.75rem', fontWeight: 700, color: '#10b981', marginTop: '0.35rem' }}>
+                    {formatCurrency(dailySummaryData.dinheiroPclab)}
+                  </div>
+                </div>
+                <div style={{ padding: '0.6rem', borderRadius: '10px', background: 'rgba(16, 185, 129, 0.15)', color: '#10b981' }}>
+                  <Banknote size={22} />
+                </div>
+              </div>
+              <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: '0.75rem', paddingTop: '0.75rem', borderTop: '1px solid var(--border-color)', fontSize: '0.8rem', color: 'var(--text-muted)' }}>
+                <span><Receipt size={13} style={{ display: 'inline', verticalAlign: 'middle', marginRight: '4px' }} /><strong>{dailySummaryData.countDinheiro}</strong> recebimentos</span>
+                <span>Depósito BB: <strong style={{ color: dailySummaryData.bbDinheiro > 0 ? '#10b981' : 'var(--text-muted)' }}>{formatCurrency(dailySummaryData.bbDinheiro)}</strong></span>
+              </div>
+            </div>
+
+            {/* Card 3: Cartões (Crédito + Débito) */}
+            <div className="glass-card stat-card" style={{ borderLeft: '4px solid #8b5cf6' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
+                <div>
+                  <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.05em', fontWeight: 600 }}>
+                    Cartões (Crédito / Débito)
+                  </span>
+                  <div style={{ fontSize: '1.75rem', fontWeight: 700, color: '#8b5cf6', marginTop: '0.35rem' }}>
+                    {formatCurrency(dailySummaryData.cartaoCreditoPclab + dailySummaryData.cartaoDebitoPclab)}
+                  </div>
+                </div>
+                <div style={{ padding: '0.6rem', borderRadius: '10px', background: 'rgba(139, 92, 246, 0.15)', color: '#8b5cf6' }}>
+                  <CreditCard size={22} />
+                </div>
+              </div>
+              <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: '0.75rem', paddingTop: '0.75rem', borderTop: '1px solid var(--border-color)', fontSize: '0.8rem', color: 'var(--text-muted)' }}>
+                <span>Créd: {formatCurrency(dailySummaryData.cartaoCreditoPclab)} | Déb: {formatCurrency(dailySummaryData.cartaoDebitoPclab)}</span>
+                <span>Maq. Ton: <strong style={{ color: '#8b5cf6' }}>{formatCurrency(dailySummaryData.totalMaq)}</strong></span>
+              </div>
+            </div>
+
+            {/* Card 4: Pix e Transferências */}
+            <div className="glass-card stat-card" style={{ borderLeft: '4px solid #06b6d4' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
+                <div>
+                  <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.05em', fontWeight: 600 }}>
+                    Pix / Transferência
+                  </span>
+                  <div style={{ fontSize: '1.75rem', fontWeight: 700, color: '#06b6d4', marginTop: '0.35rem' }}>
+                    {formatCurrency(dailySummaryData.pixPclab)}
+                  </div>
+                </div>
+                <div style={{ padding: '0.6rem', borderRadius: '10px', background: 'rgba(6, 182, 212, 0.15)', color: '#06b6d4' }}>
+                  <Sparkles size={22} />
+                </div>
+              </div>
+              <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: '0.75rem', paddingTop: '0.75rem', borderTop: '1px solid var(--border-color)', fontSize: '0.8rem', color: 'var(--text-muted)' }}>
+                <span><strong>{dailySummaryData.countPix}</strong> atendimentos</span>
+                <span>Pix no BB: <strong style={{ color: '#06b6d4' }}>{formatCurrency(dailySummaryData.bbPix)}</strong></span>
+              </div>
+            </div>
+
+          </div>
+
+          {/* Barra de Distribuição de Modalidades do Dia */}
+          {dailySummaryData.totalPclab > 0 && (
+            <div className="glass-card" style={{ padding: '1.25rem' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.75rem' }}>
+                <span style={{ fontWeight: 600, fontSize: '0.9rem', color: 'var(--text-dark)' }}>
+                  Composição do Faturamento por Modalidade
+                </span>
+                <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>
+                  Total: <strong>{formatCurrency(dailySummaryData.totalPclab)}</strong>
+                </span>
+              </div>
+
+              {/* Multi-color Progress Bar */}
+              <div style={{ display: 'flex', height: '14px', borderRadius: '8px', overflow: 'hidden', background: 'rgba(255,255,255,0.05)', gap: '2px' }}>
+                {dailySummaryData.dinheiroPclab > 0 && (
+                  <div 
+                    style={{ 
+                      width: `${(dailySummaryData.dinheiroPclab / dailySummaryData.totalPclab) * 100}%`, 
+                      background: '#10b981', 
+                      transition: 'width 0.3s ease' 
+                    }} 
+                    title={`Dinheiro: ${formatCurrency(dailySummaryData.dinheiroPclab)} (${((dailySummaryData.dinheiroPclab / dailySummaryData.totalPclab) * 100).toFixed(1)}%)`} 
+                  />
+                )}
+                {dailySummaryData.cartaoCreditoPclab > 0 && (
+                  <div 
+                    style={{ 
+                      width: `${(dailySummaryData.cartaoCreditoPclab / dailySummaryData.totalPclab) * 100}%`, 
+                      background: '#8b5cf6', 
+                      transition: 'width 0.3s ease' 
+                    }} 
+                    title={`Cartão Crédito: ${formatCurrency(dailySummaryData.cartaoCreditoPclab)} (${((dailySummaryData.cartaoCreditoPclab / dailySummaryData.totalPclab) * 100).toFixed(1)}%)`} 
+                  />
+                )}
+                {dailySummaryData.cartaoDebitoPclab > 0 && (
+                  <div 
+                    style={{ 
+                      width: `${(dailySummaryData.cartaoDebitoPclab / dailySummaryData.totalPclab) * 100}%`, 
+                      background: '#3b82f6', 
+                      transition: 'width 0.3s ease' 
+                    }} 
+                    title={`Cartão Débito: ${formatCurrency(dailySummaryData.cartaoDebitoPclab)} (${((dailySummaryData.cartaoDebitoPclab / dailySummaryData.totalPclab) * 100).toFixed(1)}%)`} 
+                  />
+                )}
+                {dailySummaryData.pixPclab > 0 && (
+                  <div 
+                    style={{ 
+                      width: `${(dailySummaryData.pixPclab / dailySummaryData.totalPclab) * 100}%`, 
+                      background: '#06b6d4', 
+                      transition: 'width 0.3s ease' 
+                    }} 
+                    title={`Pix / Transf: ${formatCurrency(dailySummaryData.pixPclab)} (${((dailySummaryData.pixPclab / dailySummaryData.totalPclab) * 100).toFixed(1)}%)`} 
+                  />
+                )}
+                {dailySummaryData.outrosPclab > 0 && (
+                  <div 
+                    style={{ 
+                      width: `${(dailySummaryData.outrosPclab / dailySummaryData.totalPclab) * 100}%`, 
+                      background: '#eab308', 
+                      transition: 'width 0.3s ease' 
+                    }} 
+                    title={`Outros: ${formatCurrency(dailySummaryData.outrosPclab)} (${((dailySummaryData.outrosPclab / dailySummaryData.totalPclab) * 100).toFixed(1)}%)`} 
+                  />
+                )}
+              </div>
+
+              {/* Legenda com percentuais */}
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: '1.25rem', marginTop: '0.85rem', fontSize: '0.8rem' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
+                  <span style={{ width: '10px', height: '10px', borderRadius: '50%', background: '#10b981' }} />
+                  <span>Dinheiro: <strong>{formatCurrency(dailySummaryData.dinheiroPclab)}</strong> ({((dailySummaryData.dinheiroPclab / dailySummaryData.totalPclab) * 100).toFixed(1)}%)</span>
+                </div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
+                  <span style={{ width: '10px', height: '10px', borderRadius: '50%', background: '#8b5cf6' }} />
+                  <span>Cartão Crédito: <strong>{formatCurrency(dailySummaryData.cartaoCreditoPclab)}</strong> ({((dailySummaryData.cartaoCreditoPclab / dailySummaryData.totalPclab) * 100).toFixed(1)}%)</span>
+                </div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
+                  <span style={{ width: '10px', height: '10px', borderRadius: '50%', background: '#3b82f6' }} />
+                  <span>Cartão Débito: <strong>{formatCurrency(dailySummaryData.cartaoDebitoPclab)}</strong> ({((dailySummaryData.cartaoDebitoPclab / dailySummaryData.totalPclab) * 100).toFixed(1)}%)</span>
+                </div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
+                  <span style={{ width: '10px', height: '10px', borderRadius: '50%', background: '#06b6d4' }} />
+                  <span>Pix / Transf: <strong>{formatCurrency(dailySummaryData.pixPclab)}</strong> ({((dailySummaryData.pixPclab / dailySummaryData.totalPclab) * 100).toFixed(1)}%)</span>
+                </div>
+                {dailySummaryData.outrosPclab > 0 && (
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
+                    <span style={{ width: '10px', height: '10px', borderRadius: '50%', background: '#eab308' }} />
+                    <span>Outros: <strong>{formatCurrency(dailySummaryData.outrosPclab)}</strong> ({((dailySummaryData.outrosPclab / dailySummaryData.totalPclab) * 100).toFixed(1)}%)</span>
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+
+          {/* Grid: Tabela de Atendimentos PCLAB do Dia + Painel de Canais de Destino */}
+          <div className="grid-12" style={{ gap: '1.5rem' }}>
+            
+            {/* Coluna 1 (8 cols): Atendimentos PCLAB */}
+            <div className="col-span-8-md" style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
+              <div className="glass-card" style={{ padding: '1.5rem' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '0.75rem', marginBottom: '1.25rem' }}>
+                  <div>
+                    <h3 style={{ color: 'var(--text-dark)', fontWeight: 600, fontSize: '1.1rem', margin: 0 }}>
+                      Atendimentos Registrados no PCLAB
+                    </h3>
+                    <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>
+                      Listagem individual de todos os lançamentos do dia selecionado
+                    </span>
+                  </div>
+
+                  {/* Campo de Busca Rápida */}
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                    <div style={{ position: 'relative' }}>
+                      <Search size={14} style={{ position: 'absolute', left: '10px', top: '50%', transform: 'translateY(-50%)', color: 'var(--text-muted)' }} />
+                      <input 
+                        type="text" 
+                        placeholder="Buscar paciente, ID..." 
+                        value={dailySearch} 
+                        onChange={e => setDailySearch(e.target.value)}
+                        className="input-text"
+                        style={{ paddingLeft: '30px', paddingRight: '10px', width: '200px', fontSize: '0.85rem' }}
+                      />
+                    </div>
+                  </div>
+                </div>
+
+                {/* Filtros de Forma de Pagamento */}
+                <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.4rem', marginBottom: '1.25rem' }}>
+                  <button 
+                    type="button" 
+                    className={`btn-filter ${dailyPclabFilter === 'todos' ? 'active' : ''}`}
+                    onClick={() => setDailyPclabFilter('todos')}
+                    style={{ fontSize: '0.8rem', padding: '0.35rem 0.75rem' }}
+                  >
+                    Todos ({dailySummaryData.countPclab})
+                  </button>
+                  <button 
+                    type="button" 
+                    className={`btn-filter ${dailyPclabFilter === 'dinheiro' ? 'active' : ''}`}
+                    onClick={() => setDailyPclabFilter('dinheiro')}
+                    style={{ fontSize: '0.8rem', padding: '0.35rem 0.75rem', borderColor: dailyPclabFilter === 'dinheiro' ? '#10b981' : undefined }}
+                  >
+                    💵 Dinheiro ({dailySummaryData.countDinheiro})
+                  </button>
+                  <button 
+                    type="button" 
+                    className={`btn-filter ${dailyPclabFilter === 'cartao_credito' ? 'active' : ''}`}
+                    onClick={() => setDailyPclabFilter('cartao_credito')}
+                    style={{ fontSize: '0.8rem', padding: '0.35rem 0.75rem', borderColor: dailyPclabFilter === 'cartao_credito' ? '#8b5cf6' : undefined }}
+                  >
+                    💳 Crédito ({dailySummaryData.countCartaoCredito})
+                  </button>
+                  <button 
+                    type="button" 
+                    className={`btn-filter ${dailyPclabFilter === 'cartao_debito' ? 'active' : ''}`}
+                    onClick={() => setDailyPclabFilter('cartao_debito')}
+                    style={{ fontSize: '0.8rem', padding: '0.35rem 0.75rem', borderColor: dailyPclabFilter === 'cartao_debito' ? '#3b82f6' : undefined }}
+                  >
+                    💳 Débito ({dailySummaryData.countCartaoDebito})
+                  </button>
+                  <button 
+                    type="button" 
+                    className={`btn-filter ${dailyPclabFilter === 'pix' ? 'active' : ''}`}
+                    onClick={() => setDailyPclabFilter('pix')}
+                    style={{ fontSize: '0.8rem', padding: '0.35rem 0.75rem', borderColor: dailyPclabFilter === 'pix' ? '#06b6d4' : undefined }}
+                  >
+                    ⚡ Pix / Transf ({dailySummaryData.countPix})
+                  </button>
+                </div>
+
+                {/* Tabela de Lançamentos */}
+                <div className="table-responsive" style={{ maxHeight: '500px', overflowY: 'auto' }}>
+                  <table className="table-conferencia">
+                    <thead>
+                      <tr>
+                        <th style={{ width: '80px' }}>Horário</th>
+                        <th>Paciente / Descrição</th>
+                        <th>Forma de Pgto</th>
+                        <th style={{ textAlign: 'right', width: '120px' }}>Valor</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {dailySummaryData.filteredPclabList.length === 0 ? (
+                        <tr>
+                          <td colSpan={4} style={{ textAlign: 'center', padding: '2.5rem', color: 'var(--text-muted)' }}>
+                            Nenhum atendimento encontrado para os filtros selecionados neste dia.
+                          </td>
+                        </tr>
+                      ) : (
+                        dailySummaryData.filteredPclabList.map(item => {
+                          const hora = item.dt_lancamento ? (item.dt_lancamento.includes('T') ? item.dt_lancamento.split('T')[1].substring(0, 5) : item.dt_lancamento.substring(11, 16)) : '--:--';
+                          const forma = (item.forma_pgto || '').toLowerCase();
+                          let badgeColor = 'badge-blue';
+                          if (forma.includes('dinheiro')) badgeColor = 'badge-green';
+                          else if (forma.includes('crédito') || forma.includes('credito')) badgeColor = 'badge-purple';
+                          else if (forma.includes('débito') || forma.includes('debito')) badgeColor = 'badge-blue';
+                          else if (forma.includes('pix') || forma.includes('transf')) badgeColor = 'badge-cyan';
+
+                          return (
+                            <tr key={item.id}>
+                              <td style={{ fontWeight: 600, color: 'var(--text-muted)', fontSize: '0.85rem' }}>
+                                {hora}
+                              </td>
+                              <td>
+                                <div style={{ fontWeight: 500, color: 'var(--text-dark)' }}>
+                                  {item.descricao}
+                                </div>
+                                <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>
+                                  ID Lançamento: #{item.id}
+                                </div>
+                              </td>
+                              <td>
+                                <span className={`badge ${badgeColor}`} style={{ fontSize: '0.75rem' }}>
+                                  {item.forma_pgto || 'Não informada'}
+                                </span>
+                              </td>
+                              <td className="amount" style={{ textAlign: 'right', fontWeight: 600, color: 'var(--text-dark)' }}>
+                                {formatCurrency(item.vr_lanc)}
+                              </td>
+                            </tr>
+                          );
+                        })
+                      )}
+                    </tbody>
+                    {dailySummaryData.filteredPclabList.length > 0 && (
+                      <tfoot>
+                        <tr style={{ background: 'rgba(255, 255, 255, 0.04)', fontWeight: 700 }}>
+                          <td colSpan={3} style={{ textAlign: 'right', padding: '0.85rem' }}>
+                            Subtotal Exibido ({dailySummaryData.filteredPclabList.length} atendimentos):
+                          </td>
+                          <td style={{ textAlign: 'right', padding: '0.85rem', color: 'var(--primary)', fontSize: '1rem' }}>
+                            {formatCurrency(dailySummaryData.filteredPclabList.reduce((acc, curr) => acc + (Number(curr.vr_lanc) || 0), 0))}
+                          </td>
+                        </tr>
+                      </tfoot>
+                    )}
+                  </table>
+                </div>
+              </div>
+            </div>
+
+            {/* Coluna 2 (4 cols): Confronto de Destinos (BB & Maquininha Ton) */}
+            <div className="col-span-4-md" style={{ display: 'flex', flexDirection: 'column', gap: '1.25rem' }}>
+              
+              {/* Card Destino 1: Extrato BB */}
+              <div className="glass-card" style={{ padding: '1.25rem' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                    <Landmark size={18} style={{ color: '#3b82f6' }} />
+                    <h4 style={{ margin: 0, fontWeight: 600, fontSize: '0.95rem', color: 'var(--text-dark)' }}>
+                      Extrato Banco do Brasil
+                    </h4>
+                  </div>
+                  <span className="badge badge-blue">
+                    Total: {formatCurrency(dailySummaryData.totalBb)}
+                  </span>
+                </div>
+
+                <div style={{ maxHeight: '220px', overflowY: 'auto' }}>
+                  {dailySummaryData.bbList.length === 0 ? (
+                    <div style={{ fontSize: '0.85rem', color: 'var(--text-muted)', textAlign: 'center', padding: '1.5rem' }}>
+                      Nenhum crédito de faturamento no BB nesta data.
+                    </div>
+                  ) : (
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
+                      {dailySummaryData.bbList.map(b => (
+                        <div key={b.id} style={{ padding: '0.6rem 0.75rem', borderRadius: '6px', background: 'rgba(255,255,255,0.02)', border: '1px solid var(--border-color)', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                          <div style={{ maxWidth: '65%' }}>
+                            <div style={{ fontSize: '0.8rem', fontWeight: 500, color: 'var(--text-dark)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                              {b.descricao_normalizada || b.descricao_historico}
+                            </div>
+                            <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>
+                              {b.descricao_historico} • {b.classificacao}
+                            </div>
+                          </div>
+                          <strong style={{ fontSize: '0.85rem', color: '#10b981' }}>
+                            +{formatCurrency(b.valor)}
+                          </strong>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              {/* Card Destino 2: Maquininha Ton */}
+              <div className="glass-card" style={{ padding: '1.25rem' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                    <CreditCard size={18} style={{ color: '#8b5cf6' }} />
+                    <h4 style={{ margin: 0, fontWeight: 600, fontSize: '0.95rem', color: 'var(--text-dark)' }}>
+                      Maquininha Ton
+                    </h4>
+                  </div>
+                  <span className="badge badge-purple">
+                    Total: {formatCurrency(dailySummaryData.totalMaq)}
+                  </span>
+                </div>
+
+                <div style={{ maxHeight: '220px', overflowY: 'auto' }}>
+                  {dailySummaryData.maqList.length === 0 ? (
+                    <div style={{ fontSize: '0.85rem', color: 'var(--text-muted)', textAlign: 'center', padding: '1.5rem' }}>
+                      Nenhuma transação na Maquininha Ton nesta data.
+                    </div>
+                  ) : (
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
+                      {dailySummaryData.maqList.map(m => {
+                        const hora = m.dt_transacao ? (m.dt_transacao.includes('T') ? m.dt_transacao.split('T')[1].substring(0, 5) : m.dt_transacao.substring(11, 16)) : '';
+                        return (
+                          <div key={m.id} style={{ padding: '0.6rem 0.75rem', borderRadius: '6px', background: 'rgba(255,255,255,0.02)', border: '1px solid var(--border-color)', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                            <div>
+                              <div style={{ fontSize: '0.8rem', fontWeight: 500, color: 'var(--text-dark)' }}>
+                                {m.metodo_pgto || 'Cartão'}
+                              </div>
+                              <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>
+                                {hora ? `${hora} • ` : ''}ID: #{m.id}
+                              </div>
+                            </div>
+                            <strong style={{ fontSize: '0.85rem', color: '#8b5cf6' }}>
+                              +{formatCurrency(m.vr_recebido)}
+                            </strong>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
+              </div>
+
+            </div>
+
+          </div>
+
+        </div>
+      )}
+
+      {/* 1. Comparação Faturamento Tab */}
       {activeTab === 'faturamento' && (
         <div className="fade-in">
           <div className="grid-12" style={{ gap: '1.5rem' }}>
