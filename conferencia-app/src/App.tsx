@@ -318,7 +318,10 @@ export default function App() {
   const [activeTab, setActiveTab] = useState<'resumo_diario' | 'dashboard' | 'conferencia' | 'classificacao' | 'regras' | 'ajustes' | 'faturamento'>('resumo_diario');
   
   // Daily Summary State (Resumo Diário)
+  const [dailyMode, setDailyMode] = useState<'dia' | 'faixa'>('dia');
   const [selectedDailyDate, setSelectedDailyDate] = useState<string>(() => format(new Date(), 'yyyy-MM-dd'));
+  const [dailyStartDate, setDailyStartDate] = useState<string>(() => format(new Date(), 'yyyy-MM-dd'));
+  const [dailyEndDate, setDailyEndDate] = useState<string>(() => format(new Date(), 'yyyy-MM-dd'));
   const [dailyPclabFilter, setDailyPclabFilter] = useState<'todos' | 'dinheiro' | 'cartao_credito' | 'cartao_debito' | 'pix' | 'outro'>('todos');
   const [dailySearch, setDailySearch] = useState<string>('');
 
@@ -709,9 +712,20 @@ export default function App() {
 
   // Resumo Diário Data Computation
   const dailySummaryData = useMemo(() => {
-    if (!selectedDailyDate) {
+    const isSingleDay = dailyMode === 'dia';
+    const effectiveStart = isSingleDay 
+      ? selectedDailyDate 
+      : (dailyStartDate <= dailyEndDate ? dailyStartDate : dailyEndDate);
+    const effectiveEnd = isSingleDay 
+      ? selectedDailyDate 
+      : (dailyStartDate <= dailyEndDate ? dailyEndDate : dailyStartDate);
+
+    if (!effectiveStart) {
       return {
-        dateStr: '',
+        isSingleDay,
+        startDateStr: '',
+        endDateStr: '',
+        daysCount: 0,
         pclabList: [],
         filteredPclabList: [],
         totalPclab: 0,
@@ -736,14 +750,29 @@ export default function App() {
       };
     }
 
-    const dateOnly = selectedDailyDate;
+    const isInDailyRange = (d: string) => {
+      if (!d) return false;
+      const dateOnly = d.includes('T') ? d.split('T')[0] : d.substring(0, 10);
+      if (isSingleDay) {
+        return dateOnly === effectiveStart;
+      }
+      return dateOnly >= effectiveStart && dateOnly <= effectiveEnd;
+    };
 
-    // 1. PCLAB for the selected day
-    const dayPclab = pclabRows.filter(r => {
-      if (!r.dt_lancamento) return false;
-      const d = r.dt_lancamento.includes('T') ? r.dt_lancamento.split('T')[0] : r.dt_lancamento.substring(0, 10);
-      return d === dateOnly;
-    });
+    // Calculate days count
+    let daysCount = 1;
+    if (!isSingleDay && effectiveStart && effectiveEnd) {
+      try {
+        const d1 = parseISO(effectiveStart);
+        const d2 = parseISO(effectiveEnd);
+        daysCount = Math.round(Math.abs((d2.getTime() - d1.getTime()) / (1000 * 60 * 60 * 24))) + 1;
+      } catch {
+        daysCount = 1;
+      }
+    }
+
+    // 1. PCLAB for the selected day/range
+    const dayPclab = pclabRows.filter(r => isInDailyRange(r.dt_lancamento));
 
     let totalPclab = 0;
     let dinheiroPclab = 0;
@@ -805,29 +834,32 @@ export default function App() {
       return true;
     });
 
-    // Sort by time ascending
-    filteredPclabList.sort((a, b) => (a.dt_lancamento || '').localeCompare(b.dt_lancamento || ''));
+    // Sort: if single day, time ascending; if multiple days, date & time descending (most recent first)
+    if (isSingleDay) {
+      filteredPclabList.sort((a, b) => (a.dt_lancamento || '').localeCompare(b.dt_lancamento || ''));
+    } else {
+      filteredPclabList.sort((a, b) => (b.dt_lancamento || '').localeCompare(a.dt_lancamento || ''));
+    }
 
-    // 2. Maquininha Ton for the day
-    const dayMaq = maquininhaRows.filter(m => {
-      if (!m.dt_transacao) return false;
-      const d = m.dt_transacao.includes('T') ? m.dt_transacao.split('T')[0] : m.dt_transacao.substring(0, 10);
-      return d === dateOnly;
-    });
+    // 2. Maquininha Ton for the day/range
+    const dayMaq = maquininhaRows.filter(m => isInDailyRange(m.dt_transacao));
+    dayMaq.sort((a, b) => (b.dt_transacao || '').localeCompare(a.dt_transacao || ''));
     const totalMaq = dayMaq.reduce((acc, curr) => acc + (Number(curr.vr_recebido) || 0), 0);
 
-    // 3. Banco do Brasil for the day
+    // 3. Banco do Brasil for the day/range
     const dayBb = receitasBbRows.filter(b => {
-      if (!b.data_lancamento) return false;
-      const d = b.data_lancamento.includes('T') ? b.data_lancamento.split('T')[0] : b.data_lancamento.substring(0, 10);
-      return d === dateOnly && (b.classificacao || '').toLowerCase() !== 'desconsiderar';
+      return isInDailyRange(b.data_lancamento) && (b.classificacao || '').toLowerCase() !== 'desconsiderar';
     });
+    dayBb.sort((a, b) => (b.data_lancamento || '').localeCompare(a.data_lancamento || ''));
     const totalBb = dayBb.reduce((acc, curr) => acc + (Number(curr.valor) || 0), 0);
     const bbDinheiro = dayBb.filter(b => (b.classificacao || '').toLowerCase() === 'dinheiro').reduce((acc, curr) => acc + (Number(curr.valor) || 0), 0);
     const bbPix = dayBb.filter(b => (b.classificacao || '').toLowerCase() === 'transferencia bancária').reduce((acc, curr) => acc + (Number(curr.valor) || 0), 0);
 
     return {
-      dateStr: dateOnly,
+      isSingleDay,
+      startDateStr: effectiveStart,
+      endDateStr: effectiveEnd,
+      daysCount,
       pclabList: dayPclab,
       filteredPclabList,
       totalPclab,
@@ -850,7 +882,7 @@ export default function App() {
       maqList: dayMaq,
       totalMaq
     };
-  }, [selectedDailyDate, pclabRows, maquininhaRows, receitasBbRows, dailyPclabFilter, dailySearch]);
+  }, [dailyMode, selectedDailyDate, dailyStartDate, dailyEndDate, pclabRows, maquininhaRows, receitasBbRows, dailyPclabFilter, dailySearch]);
 
   const reconciliationData = useMemo(() => {
     const getOnlyDate = (dateStr: string) => {
@@ -2710,89 +2742,260 @@ export default function App() {
       {activeTab === 'resumo_diario' && (
         <div className="fade-in" style={{ display: 'flex', flexDirection: 'column', gap: '1.5rem' }}>
           
-          {/* Barra de Seleção de Data do Dia */}
-          <div className="glass-card" style={{ padding: '1.25rem', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '1rem', background: 'rgba(255, 255, 255, 0.03)' }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', flexWrap: 'wrap' }}>
-              <button 
-                type="button" 
-                className="btn-filter" 
-                onClick={() => {
-                  try {
-                    const prev = addDays(parseISO(selectedDailyDate), -1);
-                    setSelectedDailyDate(format(prev, 'yyyy-MM-dd'));
-                  } catch (e) {
-                    console.error(e);
-                  }
-                }}
-                style={{ display: 'flex', alignItems: 'center', gap: '0.25rem', padding: '0.45rem 0.8rem' }}
-                title="Ir para o dia anterior"
-              >
-                <ChevronLeft size={16} /> Dia Anterior
-              </button>
-
-              <button 
-                type="button" 
-                className="btn-filter" 
-                onClick={() => setSelectedDailyDate(format(new Date(), 'yyyy-MM-dd'))}
-                style={{ 
-                  fontWeight: selectedDailyDate === format(new Date(), 'yyyy-MM-dd') ? 700 : 500,
-                  borderColor: selectedDailyDate === format(new Date(), 'yyyy-MM-dd') ? 'var(--primary)' : 'var(--border-color)',
-                  color: selectedDailyDate === format(new Date(), 'yyyy-MM-dd') ? 'var(--primary)' : 'var(--text-dark)',
-                  padding: '0.45rem 0.9rem'
-                }}
-              >
-                Hoje
-              </button>
-
-              <button 
-                type="button" 
-                className="btn-filter" 
-                onClick={() => {
-                  try {
-                    const next = addDays(parseISO(selectedDailyDate), 1);
-                    setSelectedDailyDate(format(next, 'yyyy-MM-dd'));
-                  } catch (e) {
-                    console.error(e);
-                  }
-                }}
-                style={{ display: 'flex', alignItems: 'center', gap: '0.25rem', padding: '0.45rem 0.8rem' }}
-                title="Ir para o próximo dia"
-              >
-                Próximo Dia <ChevronRight size={16} />
-              </button>
-
-              <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginLeft: '0.5rem' }}>
-                <Calendar size={16} style={{ color: 'var(--primary)' }} />
-                <input 
-                  type="date" 
-                  value={selectedDailyDate} 
-                  onChange={e => {
-                    if (e.target.value) setSelectedDailyDate(e.target.value);
+          {/* Barra de Seleção: Dia Único vs Faixa de Datas */}
+          <div className="glass-card" style={{ padding: '1.25rem', display: 'flex', flexDirection: 'column', gap: '1rem', background: 'rgba(255, 255, 255, 0.03)' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '1rem' }}>
+              
+              {/* Seletor de Modo: Dia Específico vs Faixa de Datas */}
+              <div style={{ display: 'flex', background: 'rgba(255, 255, 255, 0.05)', padding: '4px', borderRadius: '8px', border: '1px solid var(--border-color)', gap: '4px' }}>
+                <button
+                  type="button"
+                  onClick={() => setDailyMode('dia')}
+                  style={{
+                    background: dailyMode === 'dia' ? 'var(--primary)' : 'transparent',
+                    color: dailyMode === 'dia' ? '#fff' : 'var(--text-muted)',
+                    border: 'none',
+                    borderRadius: '6px',
+                    padding: '0.45rem 1rem',
+                    fontSize: '0.85rem',
+                    fontWeight: dailyMode === 'dia' ? 700 : 500,
+                    cursor: 'pointer',
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '0.4rem',
+                    transition: 'all 0.2s'
                   }}
-                  className="input-text"
-                  style={{ 
-                    padding: '0.45rem 0.8rem', 
-                    borderRadius: '8px', 
-                    background: 'var(--bg-card)', 
-                    border: '1px solid var(--border-color)', 
-                    color: 'var(--text-dark)',
-                    fontWeight: 600
+                >
+                  <Calendar size={15} /> Dia Específico
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setDailyMode('faixa')}
+                  style={{
+                    background: dailyMode === 'faixa' ? 'var(--primary)' : 'transparent',
+                    color: dailyMode === 'faixa' ? '#fff' : 'var(--text-muted)',
+                    border: 'none',
+                    borderRadius: '6px',
+                    padding: '0.45rem 1rem',
+                    fontSize: '0.85rem',
+                    fontWeight: dailyMode === 'faixa' ? 700 : 500,
+                    cursor: 'pointer',
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '0.4rem',
+                    transition: 'all 0.2s'
                   }}
-                />
+                >
+                  <CalendarDays size={15} /> Faixa de Datas (Período)
+                </button>
+              </div>
+
+              {/* Badge Informativo da Data / Período Selecionado */}
+              <div>
+                <span className="badge badge-blue" style={{ fontSize: '0.9rem', padding: '0.45rem 1rem', textTransform: 'capitalize', fontWeight: 600 }}>
+                  {dailyMode === 'dia' ? (
+                    (() => {
+                      try {
+                        return format(parseISO(selectedDailyDate), "EEEE, dd 'de' MMMM 'de' yyyy", { locale: ptBR });
+                      } catch (e) {
+                        return selectedDailyDate;
+                      }
+                    })()
+                  ) : (
+                    (() => {
+                      try {
+                        return `${formatDate(dailySummaryData.startDateStr)} até ${formatDate(dailySummaryData.endDateStr)} (${dailySummaryData.daysCount} ${dailySummaryData.daysCount === 1 ? 'dia' : 'dias'})`;
+                      } catch (e) {
+                        return `${dailySummaryData.startDateStr} até ${dailySummaryData.endDateStr}`;
+                      }
+                    })()
+                  )}
+                </span>
               </div>
             </div>
 
-            <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-              <span className="badge badge-blue" style={{ fontSize: '0.9rem', padding: '0.45rem 1rem', textTransform: 'capitalize', fontWeight: 600 }}>
-                {(() => {
-                  try {
-                    return format(parseISO(selectedDailyDate), "EEEE, dd 'de' MMMM 'de' yyyy", { locale: ptBR });
-                  } catch (e) {
-                    return selectedDailyDate;
-                  }
-                })()}
-              </span>
-            </div>
+            {/* Controles de Navegação Conforme o Modo Selecionado */}
+            {dailyMode === 'dia' ? (
+              <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', flexWrap: 'wrap', paddingTop: '0.5rem', borderTop: '1px solid rgba(255, 255, 255, 0.05)' }}>
+                <button 
+                  type="button" 
+                  className="btn-filter" 
+                  onClick={() => {
+                    try {
+                      const prev = addDays(parseISO(selectedDailyDate), -1);
+                      setSelectedDailyDate(format(prev, 'yyyy-MM-dd'));
+                    } catch (e) {
+                      console.error(e);
+                    }
+                  }}
+                  style={{ display: 'flex', alignItems: 'center', gap: '0.25rem', padding: '0.45rem 0.8rem' }}
+                  title="Ir para o dia anterior"
+                >
+                  <ChevronLeft size={16} /> Dia Anterior
+                </button>
+
+                <button 
+                  type="button" 
+                  className="btn-filter" 
+                  onClick={() => setSelectedDailyDate(format(new Date(), 'yyyy-MM-dd'))}
+                  style={{ 
+                    fontWeight: selectedDailyDate === format(new Date(), 'yyyy-MM-dd') ? 700 : 500,
+                    borderColor: selectedDailyDate === format(new Date(), 'yyyy-MM-dd') ? 'var(--primary)' : 'var(--border-color)',
+                    color: selectedDailyDate === format(new Date(), 'yyyy-MM-dd') ? 'var(--primary)' : 'var(--text-dark)',
+                    padding: '0.45rem 0.9rem'
+                  }}
+                >
+                  Hoje
+                </button>
+
+                <button 
+                  type="button" 
+                  className="btn-filter" 
+                  onClick={() => {
+                    try {
+                      const next = addDays(parseISO(selectedDailyDate), 1);
+                      setSelectedDailyDate(format(next, 'yyyy-MM-dd'));
+                    } catch (e) {
+                      console.error(e);
+                    }
+                  }}
+                  style={{ display: 'flex', alignItems: 'center', gap: '0.25rem', padding: '0.45rem 0.8rem' }}
+                  title="Ir para o próximo dia"
+                >
+                  Próximo Dia <ChevronRight size={16} />
+                </button>
+
+                <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginLeft: '0.5rem' }}>
+                  <Calendar size={16} style={{ color: 'var(--primary)' }} />
+                  <input 
+                    type="date" 
+                    value={selectedDailyDate} 
+                    onChange={e => {
+                      if (e.target.value) setSelectedDailyDate(e.target.value);
+                    }}
+                    className="input-text"
+                    style={{ 
+                      padding: '0.45rem 0.8rem', 
+                      borderRadius: '8px', 
+                      background: 'var(--bg-card)', 
+                      border: '1px solid var(--border-color)', 
+                      color: 'var(--text-dark)',
+                      fontWeight: 600
+                    }}
+                  />
+                </div>
+              </div>
+            ) : (
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: '1rem', paddingTop: '0.5rem', borderTop: '1px solid rgba(255, 255, 255, 0.05)' }}>
+                {/* Inputs de Data De -> Até */}
+                <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', flexWrap: 'wrap' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
+                    <span style={{ fontSize: '0.85rem', color: 'var(--text-muted)', fontWeight: 600 }}>De:</span>
+                    <input 
+                      type="date" 
+                      value={dailyStartDate} 
+                      onChange={e => {
+                        if (e.target.value) setDailyStartDate(e.target.value);
+                      }}
+                      className="input-text"
+                      style={{ 
+                        padding: '0.45rem 0.8rem', 
+                        borderRadius: '8px', 
+                        background: 'var(--bg-card)', 
+                        border: '1px solid var(--border-color)', 
+                        color: 'var(--text-dark)',
+                        fontWeight: 600
+                      }}
+                    />
+                  </div>
+
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
+                    <span style={{ fontSize: '0.85rem', color: 'var(--text-muted)', fontWeight: 600 }}>Até:</span>
+                    <input 
+                      type="date" 
+                      value={dailyEndDate} 
+                      onChange={e => {
+                        if (e.target.value) setDailyEndDate(e.target.value);
+                      }}
+                      className="input-text"
+                      style={{ 
+                        padding: '0.45rem 0.8rem', 
+                        borderRadius: '8px', 
+                        background: 'var(--bg-card)', 
+                        border: '1px solid var(--border-color)', 
+                        color: 'var(--text-dark)',
+                        fontWeight: 600
+                      }}
+                    />
+                  </div>
+                </div>
+
+                {/* Atalhos rápidos para Faixas Comuns */}
+                <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', flexWrap: 'wrap' }}>
+                  <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginRight: '0.2rem' }}>Atalhos:</span>
+                  <button
+                    type="button"
+                    className="btn-filter"
+                    onClick={() => {
+                      const todayStr = format(new Date(), 'yyyy-MM-dd');
+                      setDailyStartDate(todayStr);
+                      setDailyEndDate(todayStr);
+                    }}
+                    style={{ fontSize: '0.78rem', padding: '0.35rem 0.65rem' }}
+                  >
+                    Hoje
+                  </button>
+                  <button
+                    type="button"
+                    className="btn-filter"
+                    onClick={() => {
+                      const today = new Date();
+                      setDailyStartDate(format(addDays(today, -6), 'yyyy-MM-dd'));
+                      setDailyEndDate(format(today, 'yyyy-MM-dd'));
+                    }}
+                    style={{ fontSize: '0.78rem', padding: '0.35rem 0.65rem' }}
+                  >
+                    Últimos 7 dias
+                  </button>
+                  <button
+                    type="button"
+                    className="btn-filter"
+                    onClick={() => {
+                      const today = new Date();
+                      setDailyStartDate(format(addDays(today, -9), 'yyyy-MM-dd'));
+                      setDailyEndDate(format(today, 'yyyy-MM-dd'));
+                    }}
+                    style={{ fontSize: '0.78rem', padding: '0.35rem 0.65rem' }}
+                  >
+                    Últimos 10 dias
+                  </button>
+                  <button
+                    type="button"
+                    className="btn-filter"
+                    onClick={() => {
+                      const today = new Date();
+                      setDailyStartDate(format(addDays(today, -14), 'yyyy-MM-dd'));
+                      setDailyEndDate(format(today, 'yyyy-MM-dd'));
+                    }}
+                    style={{ fontSize: '0.78rem', padding: '0.35rem 0.65rem' }}
+                  >
+                    Últimos 15 dias
+                  </button>
+                  <button
+                    type="button"
+                    className="btn-filter"
+                    onClick={() => {
+                      const today = new Date();
+                      setDailyStartDate(format(new Date(today.getFullYear(), today.getMonth(), 1), 'yyyy-MM-dd'));
+                      setDailyEndDate(format(today, 'yyyy-MM-dd'));
+                    }}
+                    style={{ fontSize: '0.78rem', padding: '0.35rem 0.65rem' }}
+                  >
+                    Mês Atual
+                  </button>
+                </div>
+              </div>
+            )}
           </div>
 
           {/* Cards de Indicadores do Dia */}
@@ -2803,7 +3006,7 @@ export default function App() {
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
                 <div>
                   <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.05em', fontWeight: 600 }}>
-                    Total Faturado no Dia
+                    {dailySummaryData.isSingleDay ? 'Total Faturado no Dia' : 'Total Faturado no Período'}
                   </span>
                   <div style={{ fontSize: '1.75rem', fontWeight: 700, color: 'var(--text-dark)', marginTop: '0.35rem' }}>
                     {formatCurrency(dailySummaryData.totalPclab)}
@@ -2815,7 +3018,13 @@ export default function App() {
               </div>
               <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: '0.75rem', paddingTop: '0.75rem', borderTop: '1px solid var(--border-color)', fontSize: '0.8rem', color: 'var(--text-muted)' }}>
                 <span><Users size={13} style={{ display: 'inline', verticalAlign: 'middle', marginRight: '4px' }} /><strong>{dailySummaryData.countPclab}</strong> atendimentos</span>
-                <span>Ticket Médio: <strong style={{ color: 'var(--text-dark)' }}>{formatCurrency(dailySummaryData.ticketMedio)}</strong></span>
+                <span>
+                  {dailySummaryData.isSingleDay ? (
+                    <>Ticket Médio: <strong style={{ color: 'var(--text-dark)' }}>{formatCurrency(dailySummaryData.ticketMedio)}</strong></>
+                  ) : (
+                    <>Média/Dia: <strong style={{ color: 'var(--text-dark)' }}>{formatCurrency(dailySummaryData.daysCount > 0 ? dailySummaryData.totalPclab / dailySummaryData.daysCount : 0)}</strong></>
+                  )}
+                </span>
               </div>
             </div>
 
@@ -2889,7 +3098,7 @@ export default function App() {
             <div className="glass-card" style={{ padding: '1.25rem' }}>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.75rem' }}>
                 <span style={{ fontWeight: 600, fontSize: '0.9rem', color: 'var(--text-dark)' }}>
-                  Composição do Faturamento por Modalidade
+                  {dailySummaryData.isSingleDay ? 'Composição do Faturamento por Modalidade' : 'Composição do Faturamento no Período'}
                 </span>
                 <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>
                   Total: <strong>{formatCurrency(dailySummaryData.totalPclab)}</strong>
@@ -2987,10 +3196,12 @@ export default function App() {
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '0.75rem', marginBottom: '1.25rem' }}>
                   <div>
                     <h3 style={{ color: 'var(--text-dark)', fontWeight: 600, fontSize: '1.1rem', margin: 0 }}>
-                      Atendimentos Registrados no PCLAB
+                      {dailySummaryData.isSingleDay ? 'Atendimentos Registrados no PCLAB' : 'Atendimentos Registrados no PCLAB no Período'}
                     </h3>
                     <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>
-                      Listagem individual de todos os lançamentos do dia selecionado
+                      {dailySummaryData.isSingleDay 
+                        ? 'Listagem individual de todos os lançamentos do dia selecionado'
+                        : `Listagem individual de todos os lançamentos (${formatDate(dailySummaryData.startDateStr)} a ${formatDate(dailySummaryData.endDateStr)})`}
                     </span>
                   </div>
 
@@ -3059,7 +3270,9 @@ export default function App() {
                   <table className="table-conferencia">
                     <thead>
                       <tr>
-                        <th style={{ width: '80px' }}>Horário</th>
+                        <th style={{ width: dailySummaryData.isSingleDay ? '80px' : '140px' }}>
+                          {dailySummaryData.isSingleDay ? 'Horário' : 'Data / Hora'}
+                        </th>
                         <th>Paciente / Descrição</th>
                         <th>Forma de Pgto</th>
                         <th style={{ textAlign: 'right', width: '120px' }}>Valor</th>
@@ -3069,12 +3282,15 @@ export default function App() {
                       {dailySummaryData.filteredPclabList.length === 0 ? (
                         <tr>
                           <td colSpan={4} style={{ textAlign: 'center', padding: '2.5rem', color: 'var(--text-muted)' }}>
-                            Nenhum atendimento encontrado para os filtros selecionados neste dia.
+                            {dailySummaryData.isSingleDay 
+                              ? 'Nenhum atendimento encontrado para os filtros selecionados neste dia.'
+                              : 'Nenhum atendimento encontrado para os filtros selecionados neste período.'}
                           </td>
                         </tr>
                       ) : (
                         dailySummaryData.filteredPclabList.map(item => {
                           const hora = item.dt_lancamento ? (item.dt_lancamento.includes('T') ? item.dt_lancamento.split('T')[1].substring(0, 5) : item.dt_lancamento.substring(11, 16)) : '--:--';
+                          const dataHora = item.dt_lancamento ? formatDateHour(item.dt_lancamento) : '--/--/---- --:--';
                           const forma = (item.forma_pgto || '').toLowerCase();
                           let badgeColor = 'badge-blue';
                           if (forma.includes('dinheiro')) badgeColor = 'badge-green';
@@ -3084,8 +3300,8 @@ export default function App() {
 
                           return (
                             <tr key={item.id}>
-                              <td style={{ fontWeight: 600, color: 'var(--text-muted)', fontSize: '0.85rem' }}>
-                                {hora}
+                              <td style={{ fontWeight: 600, color: 'var(--text-muted)', fontSize: '0.85rem', whiteSpace: 'nowrap' }}>
+                                {dailySummaryData.isSingleDay ? hora : dataHora}
                               </td>
                               <td>
                                 <div style={{ fontWeight: 500, color: 'var(--text-dark)' }}>
@@ -3145,7 +3361,7 @@ export default function App() {
                 <div style={{ maxHeight: '220px', overflowY: 'auto' }}>
                   {dailySummaryData.bbList.length === 0 ? (
                     <div style={{ fontSize: '0.85rem', color: 'var(--text-muted)', textAlign: 'center', padding: '1.5rem' }}>
-                      Nenhum crédito de faturamento no BB nesta data.
+                      {dailySummaryData.isSingleDay ? 'Nenhum crédito de faturamento no BB nesta data.' : 'Nenhum crédito de faturamento no BB neste período.'}
                     </div>
                   ) : (
                     <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
@@ -3156,7 +3372,7 @@ export default function App() {
                               {b.descricao_normalizada || b.descricao_historico}
                             </div>
                             <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>
-                              {b.descricao_historico} • {b.classificacao}
+                              {!dailySummaryData.isSingleDay && `${formatDate(b.data_lancamento)} • `}{b.descricao_historico} • {b.classificacao}
                             </div>
                           </div>
                           <strong style={{ fontSize: '0.85rem', color: '#10b981' }}>
@@ -3186,12 +3402,14 @@ export default function App() {
                 <div style={{ maxHeight: '220px', overflowY: 'auto' }}>
                   {dailySummaryData.maqList.length === 0 ? (
                     <div style={{ fontSize: '0.85rem', color: 'var(--text-muted)', textAlign: 'center', padding: '1.5rem' }}>
-                      Nenhuma transação na Maquininha Ton nesta data.
+                      {dailySummaryData.isSingleDay ? 'Nenhuma transação na Maquininha Ton nesta data.' : 'Nenhuma transação na Maquininha Ton neste período.'}
                     </div>
                   ) : (
                     <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
                       {dailySummaryData.maqList.map(m => {
-                        const hora = m.dt_transacao ? (m.dt_transacao.includes('T') ? m.dt_transacao.split('T')[1].substring(0, 5) : m.dt_transacao.substring(11, 16)) : '';
+                        const timeStr = dailySummaryData.isSingleDay 
+                          ? (m.dt_transacao ? (m.dt_transacao.includes('T') ? m.dt_transacao.split('T')[1].substring(0, 5) : m.dt_transacao.substring(11, 16)) : '')
+                          : (m.dt_transacao ? formatDateHour(m.dt_transacao) : '');
                         return (
                           <div key={m.id} style={{ padding: '0.6rem 0.75rem', borderRadius: '6px', background: 'rgba(255,255,255,0.02)', border: '1px solid var(--border-color)', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                             <div>
@@ -3199,7 +3417,7 @@ export default function App() {
                                 {m.metodo_pgto || 'Cartão'}
                               </div>
                               <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>
-                                {hora ? `${hora} • ` : ''}ID: #{m.id}
+                                {timeStr ? `${timeStr} • ` : ''}ID: #{m.id}
                               </div>
                             </div>
                             <strong style={{ fontSize: '0.85rem', color: '#8b5cf6' }}>
