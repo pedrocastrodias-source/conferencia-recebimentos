@@ -219,137 +219,97 @@ def run_automation():
         )
         page = context.new_page()
         
+        pclab_acesso = os.getenv("PCLAB_ACESSO", "SAOPAULO")
+        pclab_user = os.getenv("PCLAB_USER", "pedro").lower()
+        pclab_pass = os.getenv("PCLAB_PASS", "Pedro1504")
+        
         # 1. Acessar site e fazer Login
-        print("Acessando a página de login...")
-        page.goto("https://dashboard.pclab.com.br/Home/Login")
-        
-        print("Preenchendo formulário de login...")
-        page.fill("#chave", "SAOPAULO")
-        page.fill("#usuario", "Pedro")
-        page.fill("#pww_form", "Pedro1504")
-        
-        print("Clicando no botão de login...")
-        page.click("#js-login-btn")
+        print("Acessando a página de login do PCLAB...")
+        page.goto("https://login.pclab.com.br/loginv2/login.php", timeout=60000)
         page.wait_for_load_state("networkidle")
         
-        # 2. Navegar diretamente para o relatório de fluxo de caixa
-        print("Navegando para a página do relatório...")
-        report_url = "https://dashboard.pclab.com.br/Relatorio?id=205&fkMenu=6&descricao=Relat%C3%B3rio%20-%20Fluxo%20de%20Caixa&sigla=RELFLUXOCAIXA&mostrar=True&arquivo=ReportFluxoCaixa"
-        page.goto(report_url)
+        print("Preenchendo formulário de login...")
+        page.fill("input[name='acesso']", pclab_acesso)
+        page.fill("input[name='login']", pclab_user)
+        page.fill("input[name='senha']", pclab_pass)
         
-        # 3. Esperar carregar o Stimulsoft
-        print("Aguardando carregamento e renderização do Stimulsoft...")
-        try:
-            page.wait_for_selector("input.stiJsViewerTextBox", timeout=30000)
-            time.sleep(2)  # Small buffer to ensure rendering is complete
-        except Exception as e:
-            print(f"Aviso/Erro ao aguardar inputs do Stimulsoft: {e}")
-        
-        # 4. Ajustar datas
-        inputs = page.query_selector_all("input")
-        visible_textboxes = []
-        for inp in inputs:
-            cls = inp.get_attribute("class") or ""
-            if "stiJsViewerTextBox" in cls and inp.is_visible() and inp.is_enabled():
-                visible_textboxes.append(inp)
-                
-        print(f"Encontrados {len(visible_textboxes)} campos de texto visíveis e habilitados.")
-        if len(visible_textboxes) < 2:
-            raise Exception("Não foi possível encontrar os campos de data no relatório.")
-            
-        start_date_input = visible_textboxes[0]
-        end_date_input = visible_textboxes[1]
-        
-        today = datetime.now()
-        thirty_days_ago = today - timedelta(days=30)
-        thirty_days_ago_str = thirty_days_ago.strftime("%d.%m.%Y")
-        
-        print(f"Preenchendo Data Inicial (30 dias atrás): {thirty_days_ago_str}")
-        start_date_input.click()
-        start_date_input.press("Control+A")
-        start_date_input.press("Backspace")
-        start_date_input.fill(thirty_days_ago_str)
-        start_date_input.press("Tab")
-        
-        # 5. Clicar em Enviar
-        enviar_btn = None
-        for el in page.query_selector_all("div, span, td, a"):
-            try:
-                if el.is_visible() and el.inner_text().strip() == "Enviar":
-                    enviar_btn = el
-                    break
-            except Exception:
-                pass
-                
-        if not enviar_btn:
-            raise Exception("Não foi possível encontrar o botão 'Enviar'.")
-            
-        print("Clicando no botão 'Enviar'...")
-        enviar_btn.click()
-        
-        # Aguardar dados atualizarem
-        print("Aguardando carregamento dos dados atualizados (8 segundos)...")
-        time.sleep(8)
-        
-        # 6. Clicar em Salvar
-        salvar_btn = None
-        for el in page.query_selector_all("div, span, td, a"):
-            try:
-                if el.is_visible() and el.inner_text().strip() == "Salvar":
-                    salvar_btn = el
-                    break
-            except Exception:
-                pass
-                
-        if not salvar_btn:
-            raise Exception("Não foi possível encontrar o botão 'Salvar'.")
-            
-        print("Clicando no botão 'Salvar'...")
-        salvar_btn.click()
-        time.sleep(2)
-        
-        # 7. Escolher "Arquivo Microsoft Excel..."
-        excel_option = None
-        for el in page.query_selector_all("div, span, td, a, tr"):
-            try:
-                if el.is_visible() and el.inner_text().strip() == "Arquivo Microsoft Excel...":
-                    excel_option = el
-                    break
-            except Exception:
-                pass
-                
-        if not excel_option:
-            raise Exception("Não foi possível encontrar a opção 'Arquivo Microsoft Excel...' no menu.")
-            
-        print("Selecionando a exportação para 'Arquivo Microsoft Excel...'...")
-        excel_option.click()
+        print("Submetendo login e capturando popup da sessão...")
+        with context.expect_page(timeout=45000) as p_info:
+            page.click("#btn-send-login")
+        popup = p_info.value
+        popup.wait_for_load_state("networkidle")
         time.sleep(3)
         
-        # 8. Clicar em OK no diálogo e capturar o download
-        ok_btn = None
-        ok_options = []
-        for el in page.query_selector_all("div, span, td, button"):
+        # 2. Acessar módulo Relatórios a partir do frame iConteudo
+        print("Acessando o módulo de Relatórios no portal...")
+        frame = popup.frame(name="iConteudo")
+        if not frame:
+            popup.wait_for_selector("iframe[name='iConteudo']", timeout=15000)
+            frame = popup.frame(name="iConteudo")
+            
+        if not frame:
+            raise Exception("Frame 'iConteudo' não encontrado na tela logada do PCLAB.")
+            
+        with context.expect_page(timeout=45000) as rel_info:
+            frame.evaluate("makeLogin('relatorios')")
+            
+        rel_page = rel_info.value
+        time.sleep(5)
+        rel_page.wait_for_load_state("networkidle")
+        print(f"Página de Relatórios carregada: {rel_page.url}")
+        
+        # 3. Navegar para o Fluxo de Caixa
+        print("Navegando para o 'Relatório - Fluxo de Caixa'...")
+        rel_page.evaluate("""() => {
+            const spans = Array.from(document.querySelectorAll('span.nav-main-link-name'));
+            const fluxo = spans.find(s => s.innerText.includes('Fluxo de Caixa'));
+            if (fluxo) (fluxo.closest('a') || fluxo).click();
+        }""")
+        time.sleep(4)
+        rel_page.wait_for_load_state("networkidle")
+        
+        try:
+            rel_page.wait_for_selector("input[type='date']", timeout=30000)
+        except Exception as e:
+            print(f"Aviso ao aguardar campos de data: {e}")
+            
+        # 4. Ajustar datas
+        date_inputs = rel_page.query_selector_all("input[type='date']")
+        print(f"Campos de data encontrados: {len(date_inputs)}")
+        if len(date_inputs) < 2:
+            raise Exception("Não foi possível encontrar os campos de data no formulário do relatório.")
+            
+        today = datetime.now()
+        thirty_days_ago = today - timedelta(days=30)
+        dt_ini_str = thirty_days_ago.strftime("%Y-%m-%d")
+        dt_fim_str = today.strftime("%Y-%m-%d")
+        
+        print(f"Preenchendo intervalo de datas: {dt_ini_str} até {dt_fim_str}")
+        date_inputs[0].fill(dt_ini_str)
+        date_inputs[1].fill(dt_fim_str)
+        time.sleep(1)
+        
+        # 5. Clicar no botão 'Baixar Excel' e capturar download
+        print("Clicando no botão 'Baixar Excel'...")
+        excel_btn = rel_page.locator("button:has-text('Baixar Excel')").first
+        if not excel_btn.is_visible():
+            excel_btn = rel_page.locator("text='Baixar Excel'").first
+            
+        dest_path = os.path.join(BASE_DIR, "fluxo_caixa.xlsx")
+        old_xls_path = os.path.join(BASE_DIR, "fluxo_caixa.xls")
+        if os.path.exists(old_xls_path):
             try:
-                if el.is_visible() and el.inner_text().strip() == "OK":
-                    ok_options.append(el)
+                os.remove(old_xls_path)
             except Exception:
                 pass
                 
-        if not ok_options:
-            raise Exception("Não foi possível encontrar o botão 'OK' de confirmação da exportação.")
-            
-        ok_btn = ok_options[0]
-        
-        print("Clicando em 'OK' e iniciando o download...")
-        with page.expect_download(timeout=120000) as download_info:
-            ok_btn.click()
+        with rel_page.expect_download(timeout=60000) as download_info:
+            excel_btn.click()
             
         download = download_info.value
-        dest_path = os.path.join(BASE_DIR, "fluxo_caixa.xls")
-        
-        # Salvar o arquivo
-        print(f"Download iniciado. Salvando em: {dest_path}")
+        print(f"Download iniciado ({download.suggested_filename}). Salvando em: {dest_path}")
         download.save_as(dest_path)
+        print("Download do relatório concluído com sucesso!")
         
         browser.close()
 

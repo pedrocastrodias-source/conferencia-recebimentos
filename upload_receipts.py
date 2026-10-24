@@ -19,18 +19,23 @@ if not SUPABASE_URL or not SUPABASE_KEY:
     exit(1)
 
 # Caminhos dos arquivos
-excel_path = os.path.join(script_dir, 'fluxo_caixa.xls')
+excel_path_xlsx = os.path.join(script_dir, 'fluxo_caixa.xlsx')
+excel_path_xls = os.path.join(script_dir, 'fluxo_caixa.xls')
 csv_path = os.path.join(script_dir, 'relatorio_ton.csv')
 
 def parse_date(date_str):
     if not date_str:
         return None
-    try:
-        # '25/05/2026 10:19' -> 'YYYY-MM-DD HH:MM:SS'
-        dt = datetime.strptime(str(date_str).strip(), '%d/%m/%Y %H:%M')
-        return dt.strftime('%Y-%m-%d %H:%M:%S')
-    except Exception:
-        return None
+    if isinstance(date_str, datetime):
+        return date_str.strftime('%Y-%m-%d %H:%M:%S')
+    date_clean = str(date_str).strip()
+    for fmt in ('%d/%m/%Y %H:%M', '%d/%m/%Y %H:%M:%S', '%Y-%m-%d %H:%M:%S', '%Y-%m-%d %H:%M'):
+        try:
+            dt = datetime.strptime(date_clean, fmt)
+            return dt.strftime('%Y-%m-%d %H:%M:%S')
+        except Exception:
+            pass
+    return None
 
 def parse_money(val_str):
     if not val_str:
@@ -75,58 +80,103 @@ def import_pclab(headers):
     print("INICIANDO IMPORTAÇÃO: RECEBIMENTOS PCLAB (EXCEL)")
     print("==================================================")
     
-    if not os.path.exists(excel_path):
-        print(f"Aviso: Arquivo do Excel não encontrado em: {excel_path}. Pulando etapa PCLAB.")
+    excel_path = None
+    if os.path.exists(excel_path_xlsx):
+        excel_path = excel_path_xlsx
+    elif os.path.exists(excel_path_xls):
+        excel_path = excel_path_xls
+
+    if not excel_path:
+        print(f"Aviso: Nenhum arquivo Excel ('fluxo_caixa.xlsx' ou 'fluxo_caixa.xls') encontrado em: {script_dir}. Pulando etapa PCLAB.")
         return
 
     print(f"Lendo o arquivo Excel: {excel_path}")
-    try:
-        workbook = xlrd.open_workbook(excel_path)
-        sheet = workbook.sheet_by_index(0)
-    except Exception as e:
-        print(f"Erro ao abrir o arquivo Excel: {e}")
-        return
-
-    print(f"Total de linhas no arquivo Excel: {sheet.nrows}")
-
     records_all = []
-    # As linhas de dados começam após o cabeçalho na linha 15 (índice 16)
-    for r in range(16, sheet.nrows):
-        row_values = sheet.row_values(r)
-        if not row_values or len(row_values) <= 26:
-            continue
-            
-        # Parse do ID (Coluna 0)
-        raw_id = row_values[0]
-        if isinstance(raw_id, float):
-            rec_id = int(raw_id)
-        elif isinstance(raw_id, int):
-            rec_id = raw_id
-        else:
-            val_str = str(raw_id).strip()
-            # Se for vazio ou não contiver apenas dígitos, não é uma linha de dados (pode ser totais ou rodapés)
-            if not val_str or not val_str.isdigit():
-                continue
-            rec_id = int(val_str)
-            
-        descricao = str(row_values[3]).strip()
-        tipo = str(row_values[17]).strip()
-        forma_pgto = str(row_values[20]).strip()
-        dt_lancamento = parse_date(row_values[22])
-        
+    
+    if excel_path.endswith('.xlsx'):
         try:
-            vr_lanc = float(row_values[26])
-        except (ValueError, TypeError):
-            vr_lanc = 0.0
+            wb = openpyxl.load_workbook(excel_path, data_only=True)
+            sheet = wb.active
+            print(f"Total de linhas na planilha XLSX: {sheet.max_row}")
+            
+            # Linha 1 é cabeçalho: ID, Descrição, Tipo, Forma de Pgto, Usuário, Dt. Lançamento, Vr. Lanc. (R$), Saldo (R$)
+            for r in range(2, sheet.max_row + 1):
+                raw_id = sheet.cell(r, 1).value
+                if raw_id is None:
+                    continue
+                val_str = str(raw_id).strip()
+                if not val_str.isdigit():
+                    continue
+                rec_id = int(val_str)
+                
+                descricao = str(sheet.cell(r, 2).value or '').strip()
+                tipo = str(sheet.cell(r, 3).value or '').strip()
+                forma_pgto = str(sheet.cell(r, 4).value or '').strip()
+                dt_lancamento = parse_date(sheet.cell(r, 6).value)
+                
+                raw_vr = sheet.cell(r, 7).value
+                try:
+                    vr_lanc = float(raw_vr)
+                except (ValueError, TypeError):
+                    vr_lanc = 0.0
+                    
+                records_all.append({
+                    "id": rec_id,
+                    "descricao": descricao,
+                    "tipo": tipo,
+                    "forma_pgto": forma_pgto,
+                    "dt_lancamento": dt_lancamento,
+                    "vr_lanc": vr_lanc
+                })
+            wb.close()
+        except Exception as e:
+            print(f"Erro ao abrir/processar arquivo XLSX: {e}")
+            return
+    else:
+        try:
+            workbook = xlrd.open_workbook(excel_path)
+            sheet = workbook.sheet_by_index(0)
+            print(f"Total de linhas no arquivo Excel legado (XLS): {sheet.nrows}")
+            
+            # As linhas de dados começam após o cabeçalho na linha 15 (índice 16)
+            for r in range(16, sheet.nrows):
+                row_values = sheet.row_values(r)
+                if not row_values or len(row_values) <= 26:
+                    continue
+                    
+                # Parse do ID (Coluna 0)
+                raw_id = row_values[0]
+                if isinstance(raw_id, float):
+                    rec_id = int(raw_id)
+                elif isinstance(raw_id, int):
+                    rec_id = raw_id
+                else:
+                    val_str = str(raw_id).strip()
+                    if not val_str or not val_str.isdigit():
+                        continue
+                    rec_id = int(val_str)
+                    
+                descricao = str(row_values[3]).strip()
+                tipo = str(row_values[17]).strip()
+                forma_pgto = str(row_values[20]).strip()
+                dt_lancamento = parse_date(row_values[22])
+                
+                try:
+                    vr_lanc = float(row_values[26])
+                except (ValueError, TypeError):
+                    vr_lanc = 0.0
 
-        records_all.append({
-            "id": rec_id,
-            "descricao": descricao,
-            "tipo": tipo,
-            "forma_pgto": forma_pgto,
-            "dt_lancamento": dt_lancamento,
-            "vr_lanc": vr_lanc
-        })
+                records_all.append({
+                    "id": rec_id,
+                    "descricao": descricao,
+                    "tipo": tipo,
+                    "forma_pgto": forma_pgto,
+                    "dt_lancamento": dt_lancamento,
+                    "vr_lanc": vr_lanc
+                })
+        except Exception as e:
+            print(f"Erro ao abrir o arquivo Excel: {e}")
+            return
 
     # Filtragem de estornos (saídas) e entradas correspondentes
     saidas = [r for r in records_all if r["tipo"] == "Saída"]
